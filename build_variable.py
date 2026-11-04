@@ -111,11 +111,13 @@ def is_latin_or_symbol(u: int | None) -> bool:
     """Return True if unicode codepoint belongs to Latin, Greek, Cyrillic, or Western symbols."""
     if u is None:
         return False
+    if 0x2000 <= u <= 0x200B or u == 0x3000:
+        return False  # Keep standard typographic space widths
     if u < 0x02B0:  # Basic Latin, Latin-1, Latin Extended
         return True
     if 0x0370 <= u <= 0x052F:  # Greek, Cyrillic
         return True
-    if 0x2000 <= u <= 0x23FF:  # General punctuation, currency, math, arrows
+    if 0x200C <= u <= 0x23FF:  # General punctuation, currency, math, arrows
         return True
     return False
 
@@ -126,6 +128,17 @@ def apply_dual_scale(ufo: ufoLib2.Font) -> None:
     dy_jp = JP_CENTER_Y * (1.0 - SCALE_JP)
 
     for g in ufo:
+        unicodes = set(g.unicodes or [])
+        if g.unicode is not None:
+            unicodes.add(g.unicode)
+
+        if 0x3000 in unicodes or 0x2003 in unicodes or 0x2001 in unicodes:
+            g.width = 1000
+            continue
+        if 0x2000 in unicodes or 0x2002 in unicodes:
+            g.width = 500
+            continue
+
         if is_latin_or_symbol(g.unicode):
             for c in g.contours:
                 for p in c.points:
@@ -302,6 +315,15 @@ def update_variable_metadata(font: TTFont) -> None:
         font["head"].macStyle = 0
     if "post" in font:
         font["post"].italicAngle = 0.0
+
+    # Ensure fullwidth space (U+3000) has exact 1000 UPM advance width
+    cmap_best = font.getBestCmap()
+    if 0x3000 in cmap_best:
+        g_3000 = cmap_best[0x3000]
+        if "hmtx" in font:
+            font["hmtx"][g_3000] = (1000, 0)
+        if "vmtx" in font:
+            font["vmtx"].metrics[g_3000] = (1000, 880)
 
 
 async def apply_chws(input_path: Path, output_path: Path) -> None:

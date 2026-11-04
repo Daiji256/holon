@@ -104,7 +104,7 @@ def draw_text_vertical(
     color: tuple[int, int, int] = (30, 30, 30),
 ) -> int:
     """Render a vertical text run with HarfBuzz shaping (TTB) and FreeType rasterization."""
-    features = features or {"vert": True, "vrt2": True}
+    features = features if features is not None else {"vert": True, "vrt2": True, "vchw": True}
 
     face = freetype.Face(str(font_path))
     face.set_char_size(font_size * 64)
@@ -211,7 +211,7 @@ def create_typography_specimen() -> Path:
 
 def create_chws_comparison_specimen() -> Path:
     """Generate specimen card demonstrating chws compaction including fullwidth space (U+3000)."""
-    width, height = 1200, 680
+    width, height = 1200, 720
     img = Image.new("RGBA", (width, height), (248, 249, 250, 255))
     draw = ImageDraw.Draw(img)
 
@@ -221,29 +221,32 @@ def create_chws_comparison_specimen() -> Path:
     draw.rectangle([(40, 30), (1160, 100)], fill=(255, 255, 255, 255), outline=(225, 228, 232, 255), width=1)
     draw_text_hb(img, font_bold, "Holon Sans — 約物半角ツメ（chws）＆ 全角スペース隣接検証", 24, (65, 68), color=(15, 23, 42))
 
-    sample_consec = "連続約物: 「「連続開き括弧」」。（閉じ括弧と句点）"
-    sample_space_1 = "全角スペース隣接: 「東京」　「京都」。（全角スペースと約物）"
-    sample_space_2 = "約物混在: 開き「　全角スペース　」閉じ、　読点と空白、"
+    sample_consec = "連続約物： 「「連続開き括弧」」。（閉じ括弧と句点）"
+    sample_space_1 = "全角スペース隣接： 「東京」　「京都」。（全角スペースと約物）"
+    sample_period_space = "句点＋全角空白： 東京都。　次の段落（句点余白＋全角空白のアキ量確認）"
+    sample_space_2 = "約物混在： 開き「　全角スペース　」閉じ、　読点と空白、"
 
     # Card 1: chws OFF
-    draw.rectangle([(40, 120), (1160, 370)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
-    draw.rectangle([(65, 140), (210, 168)], fill=(239, 68, 68, 255))
+    draw.rectangle([(40, 120), (1160, 390)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
+    draw.rectangle([(65, 140), (230, 168)], fill=(239, 68, 68, 255))
     draw_text_hb(img, font_bold, "chws OFF (全角固定)", 13, (75, 160), color=(255, 255, 255))
-    draw_text_hb(img, font_reg, "約物同士や全角スペースが並んだ時に、不要な余白が重複して間延びします", 14, (225, 160), color=(100, 116, 139))
+    draw_text_hb(img, font_reg, "「。　」で句点余白(0.5)＋空白(1.0)＝1.5文字分空いて間延びします", 14, (245, 160), color=(100, 116, 139))
 
-    draw_text_hb(img, font_reg, sample_consec, 24, (65, 215), features={"chws": False}, color=(51, 65, 85))
-    draw_text_hb(img, font_reg, sample_space_1, 22, (65, 265), features={"chws": False}, color=(71, 85, 105))
-    draw_text_hb(img, font_reg, sample_space_2, 20, (65, 315), features={"chws": False}, color=(100, 116, 139))
+    draw_text_hb(img, font_reg, sample_consec, 22, (65, 205), features={"chws": False}, color=(51, 65, 85))
+    draw_text_hb(img, font_reg, sample_space_1, 20, (65, 250), features={"chws": False}, color=(71, 85, 105))
+    draw_text_hb(img, font_reg, sample_period_space, 20, (65, 295), features={"chws": False}, color=(220, 38, 38))
+    draw_text_hb(img, font_reg, sample_space_2, 18, (65, 340), features={"chws": False}, color=(100, 116, 139))
 
     # Card 2: chws ON
-    draw.rectangle([(40, 390), (1160, 640)], fill=(255, 255, 255, 255), outline=(59, 130, 246, 255), width=2)
-    draw.rectangle([(65, 410), (210, 438)], fill=(37, 99, 235, 255))
-    draw_text_hb(img, font_bold, "chws ON (自動ツメ)", 13, (75, 430), color=(255, 255, 255))
-    draw_text_hb(img, font_bold, "前後の約物や全角スペース（U+3000）を認識し、余白を自動的に半角に詰めて美しく整えます", 14, (225, 430), color=(37, 99, 235))
+    draw.rectangle([(40, 410), (1160, 680)], fill=(255, 255, 255, 255), outline=(59, 130, 246, 255), width=2)
+    draw.rectangle([(65, 430), (230, 458)], fill=(37, 99, 235, 255))
+    draw_text_hb(img, font_bold, "chws ON (自動ツメ)", 13, (75, 450), color=(255, 255, 255))
+    draw_text_hb(img, font_bold, "句点余白が半角に詰められ、全角空白と合わせて正確に1.0文字分のアキに自動補正（JIS X 4051準拠）", 14, (245, 450), color=(37, 99, 235))
 
-    draw_text_hb(img, font_reg, sample_consec, 24, (65, 485), features={"chws": True}, color=(15, 23, 42))
-    draw_text_hb(img, font_reg, sample_space_1, 22, (65, 535), features={"chws": True}, color=(30, 41, 59))
-    draw_text_hb(img, font_reg, sample_space_2, 20, (65, 585), features={"chws": True}, color=(51, 65, 85))
+    draw_text_hb(img, font_reg, sample_consec, 22, (65, 495), features={"chws": True}, color=(15, 23, 42))
+    draw_text_hb(img, font_reg, sample_space_1, 20, (65, 540), features={"chws": True}, color=(30, 41, 59))
+    draw_text_hb(img, font_bold, sample_period_space, 20, (65, 585), features={"chws": True}, color=(16, 185, 129))
+    draw_text_hb(img, font_reg, sample_space_2, 18, (65, 630), features={"chws": True}, color=(51, 65, 85))
 
     out_path = SPECIMENS_DIR / "specimen_chws_comparison.png"
     img.save(out_path)
@@ -284,7 +287,7 @@ def create_italic_oblique_specimen() -> Path:
 
 
 def create_vertical_specimen() -> Path:
-    """Generate specimen card demonstrating vertical writing layout with OpenType vert/vrt2."""
+    """Generate specimen card demonstrating vertical writing layout with OpenType vert/vrt2 and vchw."""
     width, height = 1200, 840
     img = Image.new("RGBA", (width, height), (248, 249, 250, 255))
     draw = ImageDraw.Draw(img)
@@ -293,45 +296,52 @@ def create_vertical_specimen() -> Path:
     font_bold = FONTS_DIR / "HolonSans-Bold.ttf"
 
     draw.rectangle([(40, 30), (1160, 100)], fill=(255, 255, 255, 255), outline=(225, 228, 232, 255), width=1)
-    draw_text_hb(img, font_bold, "Holon Sans — 縦書き組版（Vertical Layout / vert・vrt2 対応）", 24, (65, 68), color=(15, 23, 42))
+    draw_text_hb(img, font_bold, "Holon Sans — 縦書き組版（vert・vrt2・vchw 縦約物ツメ対応）", 24, (65, 68), color=(15, 23, 42))
 
     # Main Vertical Container Card
     draw.rectangle([(40, 120), (1160, 800)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
 
     # Explanation header inside card
-    draw_text_hb(img, font_bold, "縦書きフィーチャー（vert / vrt2）および縦書きメトリクス（vmtx / vhea）による完全対応", 16, (65, 155), color=(37, 99, 235))
-    draw_text_hb(img, font_reg, "約物（「」やー、句読点）の位置が縦書き用に自動回転・右上に再配置されます", 14, (65, 185), color=(100, 116, 139))
+    draw_text_hb(img, font_bold, "縦書きフィーチャー（vert / vrt2）および縦約物ツメ（vchw）による完全対応", 16, (65, 155), color=(37, 99, 235))
+    draw_text_hb(img, font_reg, "約物（「」やー、句読点）の位置が縦書き用に自動回転・右上に再配置され、連続約物や全角空白も美しく自動ツメされます", 14, (65, 185), color=(100, 116, 139))
 
     # Render multiple vertical columns (traditional right-to-left column progression)
     columns = [
-        (1050, "『ホロン・サンズ』縦書きの美学。"),
-        (980, "国境を越え、文字と文字が響き合う。"),
-        (910, "「吾輩は猫である。名前はまだ無い。"),
-        (840, "どこで生れたかとんと見当がつかぬ。"),
-        (770, "何でも薄暗いじめじめした所で"),
-        (700, "ニャーニャー泣いていた事だけは記憶している。」"),
-        (630, "縦書き約物テスト: 「（東京都）」ー新宿・渋谷。"),
-        (560, "数字とアルファベット: ２０２６年 Ｈｏｌｏｎ Ｓａｎｓ。"),
+        (1080, "『ホロン・サンズ』縦書きの美学。"),
+        (1015, "国境を越え、文字と文字が響き合う。"),
+        (950, "「吾輩は猫である。名前はまだ無い。"),
+        (885, "どこで生れたかとんと見当がつかぬ。"),
+        (820, "何でも薄暗いじめじめした所で"),
+        (755, "ニャーニャー泣いていた事だけは記憶している。」"),
+        (690, "縦書き約物テスト： 「（東京都）」ー新宿・渋谷。"),
+        (625, "全角コロン： ２０２６年 Ｈｏｌｏｎ Ｓａｎｓ。"),
     ]
 
     for col_x, col_text in columns:
-        draw_text_vertical(img, font_reg, col_text, 24, (col_x, 230), features={"vert": True, "vrt2": True})
+        draw_text_vertical(img, font_reg, col_text, 23, (col_x, 230), features={"vert": True, "vrt2": True, "vchw": True})
+
+    # Vertical vchw comparison columns (vchw ON vs vchw OFF)
+    draw.rectangle([(485, 230), (595, 750)], fill=(248, 250, 252, 255), outline=(226, 232, 240, 255), width=1)
+    draw_text_vertical(img, font_bold, "【vchw ON 自動ツメ】 「「連続開き」」。（全角空白　隣接もツメ）", 18, (555, 250), features={"vert": True, "vrt2": True, "vchw": True}, color=(37, 99, 235))
+    draw_text_vertical(img, font_reg, "【vchw OFF 全角固定】 「「連続開き」」。（全角空白　隣接もツメ）", 18, (510, 250), features={"vert": True, "vrt2": True, "vchw": False}, color=(220, 38, 38))
 
     # Side commentary panel (left side)
-    draw.rectangle([(65, 230), (480, 750)], fill=(241, 245, 249, 255), outline=(203, 213, 225, 255), width=1)
+    draw.rectangle([(65, 230), (460, 750)], fill=(241, 245, 249, 255), outline=(203, 213, 225, 255), width=1)
     draw_text_hb(img, font_bold, "縦書き仕様のポイント", 18, (90, 265), color=(15, 23, 42))
     points = [
         "・vert / vrt2 による縦書き字形置換",
+        "・vchw による縦書き約物半角ツメ（連続括弧・句読点）",
+        "・全角空白（U+3000）隣接時の自動送り調整",
+        "・全角コロン（：）の縦書き正立配置",
         "・かぎ括弧「」や波ダッシュ〜、音引きーの縦回転",
         "・読点（、）句点（。）の右上アキ自動配置",
-        "・vmtx テーブルによる縦送り幅 1000 の統一",
-        "・全角英数・記号の縦組み垂直アライメント",
+        "・vmtx / VVAR テーブルによる縦送り幅 1000 の統一",
         "・電子書籍・書籍・縦書きUIへの完全適応",
     ]
     py = 315
     for pt in points:
-        draw_text_hb(img, font_reg, pt, 15, (90, py), color=(51, 65, 85))
-        py += 45
+        draw_text_hb(img, font_reg, pt, 14, (90, py), color=(51, 65, 85))
+        py += 42
 
     out_path = SPECIMENS_DIR / "specimen_vertical.png"
     img.save(out_path)

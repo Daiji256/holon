@@ -82,11 +82,13 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def is_latin_or_symbol(code: int) -> bool:
     """Return True if unicode belongs to Latin, Greek, Cyrillic, or Western symbols."""
+    if 0x2000 <= code <= 0x200B or code == 0x3000:
+        return False  # Keep standard typographic space widths
     if code < 0x02B0:  # Basic Latin, Latin-1, Latin Extended-A/B
         return True
     if 0x0370 <= code <= 0x052F:  # Greek, Cyrillic
         return True
-    if 0x2000 <= code <= 0x218F:  # Punctuation, Currency, Letterlike, Number Forms
+    if 0x200C <= code <= 0x218F:  # Punctuation, Currency, Letterlike, Number Forms
         return True
     if 0x2190 <= code <= 0x23FF:  # Arrows, Math, Technical
         return True
@@ -258,8 +260,15 @@ def merge_sans_glyphs(
         scaled_glyph.recalcBounds(glyf_jp)
 
         orig_w, orig_lsb = font_sans["hmtx"][gname_sans]
-        new_w = int(round(orig_w * scale))
-        new_lsb = int(round(orig_lsb * scale))
+        if ucode in (0x2001, 0x2003, 0x3000):
+            new_w = 1000
+            new_lsb = 0
+        elif ucode in (0x2000, 0x2002):
+            new_w = 500
+            new_lsb = 0
+        else:
+            new_w = int(round(orig_w * scale))
+            new_lsb = int(round(orig_lsb * scale))
 
         glyf_jp[dest_gname] = scaled_glyph
         hmtx_jp[dest_gname] = (new_w, new_lsb)
@@ -353,6 +362,14 @@ def build_style(weight: str, italic: bool = False) -> Path:
 
     # 4. Update font naming records conforming strictly to SIL OFL 1.1
     update_name_table(font_jp, weight, italic)
+
+    # 4.5 Ensure fullwidth space (U+3000) has exact 1000 UPM advance width
+    cmap_best = font_jp.getBestCmap()
+    if 0x3000 in cmap_best:
+        g_3000 = cmap_best[0x3000]
+        font_jp["hmtx"][g_3000] = (1000, 0)
+        if font_jp.get("vmtx") is not None:
+            font_jp["vmtx"].metrics[g_3000] = (1000, 880)
 
     # 5. Temporary intermediate font before chws injection
     ps_suffix = style_label.replace(" ", "")
