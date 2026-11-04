@@ -9,6 +9,14 @@ scratch/
 *.woff2
 fonts/
 
+# Visual specimens and preview images (do not commit during development)
+specimens/
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.webp
+
 # OFL.txt (committed only when fonts are committed)
 OFL.txt
 
