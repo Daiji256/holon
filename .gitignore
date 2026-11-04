@@ -17,6 +17,9 @@ specimens/
 *.svg
 *.webp
 
+# HTML test previews (do not commit)
+*.html
+
 # OFL.txt (committed only when fonts are committed)
 OFL.txt
 
