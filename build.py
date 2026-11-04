@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import math
 import sys
+import unicodedata
 from pathlib import Path
 
 from east_asian_spacing import Builder, Config
@@ -284,6 +285,24 @@ def merge_sans_glyphs(
         vhea_jp.numOfLongVerMetrics = len(new_order)
 
 
+def add_cjk_compatibility_mappings(font_jp: TTFont) -> int:
+    """Map missing CJK Compatibility Ideographs (U+F900..U+FAFF) to canonical unified ideographs."""
+    cmap_jp = font_jp.getBestCmap()
+    new_mappings = {}
+    for code in range(0xF900, 0xFB00):
+        if code in cmap_jp:
+            continue
+        d = unicodedata.normalize("NFKD", chr(code))
+        if len(d) == 1 and ord(d) in cmap_jp:
+            new_mappings[code] = cmap_jp[ord(d)]
+
+    for table in font_jp["cmap"].tables:
+        if table.isUnicode():
+            table.cmap.update(new_mappings)
+
+    return len(new_mappings)
+
+
 async def apply_chws(input_path: Path, output_path: Path) -> None:
     """Inject chws and vchw OpenType feature rules using east_asian_spacing."""
     config = Config.default.clone()
@@ -310,6 +329,10 @@ def build_style(weight: str, italic: bool = False) -> Path:
     # 2. Extract and scale Latin/symbols from IBM Plex Sans (1.02x scale)
     print(f"Merging Latin/symbol glyphs from IBM Plex Sans (scale={SCALE_SANS})...")
     merge_sans_glyphs(font_jp, font_sans, scale=SCALE_SANS)
+
+    # 3. Add safe CJK Compatibility Ideographs mappings
+    num_compat = add_cjk_compatibility_mappings(font_jp)
+    print(f"Mapped {num_compat} CJK compatibility ideographs to canonical unified glyphs.")
 
     # 3. Set OS/2 weight class and style flags
     font_jp["OS/2"].usWeightClass = WEIGHT_VALUES[weight]

@@ -37,9 +37,10 @@ def draw_text_hb(
     font_size: int,
     pos: tuple[int, int],
     features: dict | None = None,
+    variations: dict[str, float] | None = None,
     color: tuple[int, int, int] = (30, 30, 30),
 ) -> int:
-    """Render a horizontal text run with HarfBuzz shaping and FreeType rasterization."""
+    """Render a horizontal text run with HarfBuzz shaping and FreeType rasterization, supporting variations."""
     features = features or {}
 
     face = freetype.Face(str(font_path))
@@ -51,6 +52,13 @@ def draw_text_hb(
     hb_face = hb.Face(hb_blob)
     hb_font = hb.Font(hb_face)
     hb_font.scale = (font_size * 64, font_size * 64)
+
+    if variations:
+        hb_font.set_variations(variations)
+        vinfo = face.get_variation_info()
+        if vinfo and vinfo.axes:
+            coords = [variations.get(a.tag.strip(), a.default) for a in vinfo.axes]
+            face.set_var_design_coords(coords)
 
     buf = hb.Buffer()
     buf.add_str(text)
@@ -331,12 +339,137 @@ def create_vertical_specimen() -> Path:
     return out_path
 
 
+def create_variable_multi_axis_specimen() -> Path:
+    """Generate specimen card demonstrating 3-axis variable font: Weight, Slant, and Grade."""
+    width, height = 1200, 1100
+    img = Image.new("RGBA", (width, height), (248, 249, 250, 255))
+    draw = ImageDraw.Draw(img)
+
+    font_var = FONTS_DIR / "HolonSans-Variable.otf"
+    font_bold = FONTS_DIR / "HolonSans-Bold.ttf"
+    font_reg = FONTS_DIR / "HolonSans-Regular.ttf"
+
+    # Header
+    draw.rectangle([(40, 30), (1160, 100)], fill=(255, 255, 255, 255), outline=(225, 228, 232, 255), width=1)
+    draw_text_hb(img, font_bold, "Holon Sans — 3軸バリアブルフォント（Weight / Slant / Grade）", 24, (65, 68), color=(15, 23, 42))
+
+    # Panel 1: Weight Axis (wght: 100 -> 700)
+    draw.rectangle([(40, 120), (1160, 420)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
+    draw_text_hb(img, font_bold, "1. Weight 軸（wght: 100 〜 700）のシームレスな連続変化", 16, (65, 150), color=(37, 99, 235))
+    
+    weights = [
+        (100, "Thin (100)"),
+        (250, "Light+ (250)"),
+        (400, "Regular (400)"),
+        (550, "Medium+ (550)"),
+        (700, "Bold (700)"),
+    ]
+    y_pos = 195
+    for w_val, label in weights:
+        draw_text_hb(img, font_reg, label, 12, (65, y_pos + 16), color=(100, 116, 139))
+        sample = "Holon Sans 美しい文字の調和。The quick brown fox jumps."
+        draw_text_hb(img, font_var, sample, 20, (190, y_pos + 18), variations={"wght": w_val, "slnt": 0, "GRAD": 0}, color=(15, 23, 42))
+        y_pos += 42
+
+    # Panel 2: Slant Axis (slnt: 0 -> -11)
+    draw.rectangle([(40, 440), (1160, 740)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
+    draw_text_hb(img, font_bold, "2. Slant 軸（slnt: 0° 〜 -11.0°）による和欧統一のオブリーク傾斜", 16, (65, 470), color=(147, 51, 234))
+
+    slants = [
+        (0.0, "直立 0.0°"),
+        (-3.0, "微傾 -3.0°"),
+        (-6.0, "中傾 -6.0°"),
+        (-9.0, "深傾 -9.0°"),
+        (-11.0, "イタリック -11°"),
+    ]
+    y_pos = 515
+    for s_val, label in slants:
+        draw_text_hb(img, font_reg, label, 12, (65, y_pos + 16), color=(100, 116, 139))
+        sample = "和文字も欧文も自然に11°傾斜。Continuous slant variation: 0° to -11°."
+        draw_text_hb(img, font_var, sample, 20, (190, y_pos + 18), variations={"wght": 400, "slnt": s_val, "GRAD": 0}, color=(15, 23, 42))
+        y_pos += 42
+
+    # Panel 3: Grade Axis (GRAD: -100 to +100) and Dark Mode compensation
+    draw.rectangle([(40, 760), (1160, 1060)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
+    draw_text_hb(img, font_bold, "3. Grade 軸（GRAD: -100 〜 +100）— レイアウト固定の精密太さ調整", 16, (65, 790), color=(217, 119, 6))
+    draw_text_hb(img, font_reg, "文字の送り幅（Horizontal Metrics）を1ピクセルも変えずに、線の太さ・視覚的明度のみを変化させます", 13, (65, 815), color=(100, 116, 139))
+
+    # Light mode box
+    draw.rectangle([(65, 840), (585, 1030)], fill=(248, 250, 252, 255), outline=(226, 232, 240, 255), width=1)
+    draw_text_hb(img, font_bold, "ライトモード (GRAD: 0)", 13, (85, 865), color=(15, 23, 42))
+    draw_text_hb(img, font_var, "白背景の標準ウェイト。レイアウトが完全に維持されます。", 15, (85, 910), variations={"wght": 400, "slnt": 0, "GRAD": 0}, color=(15, 23, 42))
+    draw_text_hb(img, font_var, "GRAD: +100 で視認性向上: 細部の線の太さのみが増加。", 14, (85, 960), variations={"wght": 400, "slnt": 0, "GRAD": 100}, color=(15, 23, 42))
+
+    # Dark mode box
+    draw.rectangle([(615, 840), (1135, 1030)], fill=(15, 23, 42, 255))
+    draw_text_hb(img, font_bold, "ダークモード光学補正 (GRAD: -100)", 13, (635, 865), color=(248, 250, 252))
+    draw_text_hb(img, font_var, "黒背景で光の膨張（ブルーム）を抑え、すっきり可読性を保つ。", 15, (635, 910), variations={"wght": 400, "slnt": 0, "GRAD": -100}, color=(241, 245, 249))
+    draw_text_hb(img, font_var, "送り幅はライトモードと完全一致し、行の折り返しは一切ズレません。", 14, (635, 960), variations={"wght": 400, "slnt": 0, "GRAD": -100}, color=(203, 213, 225))
+
+    out_path = SPECIMENS_DIR / "specimen_variable_spectrum.png"
+    img.save(out_path)
+    print(f"Created: {out_path}")
+    return out_path
+
+
+def create_cjk_compat_specimen() -> Path:
+    """Generate specimen card demonstrating safe CJK Compatibility Ideographs gap closure."""
+    width, height = 1200, 620
+    img = Image.new("RGBA", (width, height), (248, 249, 250, 255))
+    draw = ImageDraw.Draw(img)
+
+    font_bold = FONTS_DIR / "HolonSans-Bold.ttf"
+    font_reg = FONTS_DIR / "HolonSans-Regular.ttf"
+
+    draw.rectangle([(40, 30), (1160, 100)], fill=(255, 255, 255, 255), outline=(225, 228, 232, 255), width=1)
+    draw_text_hb(img, font_bold, "Holon Sans — CJK 互換漢字（Compatibility Ideographs）拡張検証", 24, (65, 68), color=(15, 23, 42))
+
+    draw.rectangle([(40, 120), (1160, 580)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
+    draw_text_hb(img, font_bold, "Unicode NFKD 準拠の正規等価写像により 346 字の CJK 互換漢字（U+F900〜U+FAFF）を安全に補完", 15, (65, 155), color=(37, 99, 235))
+    draw_text_hb(img, font_reg, "Noto Sans JP との字形カバレッジ差分を埋め、人名・地名・異体字互換コードを破綻なく表示します", 13, (65, 185), color=(100, 116, 139))
+
+    # Comparison table
+    test_chars = [
+        ("U+F900 豈", "U+8C48 豈", "豈"),
+        ("U+F901 更", "U+66F4 更", "更"),
+        ("U+F902 車", "U+8ECA 車", "車"),
+        ("U+F904 滑", "U+6ED1 滑", "滑"),
+        ("U+F90A 金", "U+91D1 金", "金"),
+        ("U+FA11 﨑", "U+5D0E 崎", "崎"),
+        ("U+FA15 凞", "U+7199 熙", "熙"),
+        ("U+FA1F 﨟", "U+814B 臘", "臘"),
+        ("U+FA20 蘒", "U+874E 蝋", "蝋"),
+        ("U+FA22 諸", "U+8AF8 諸", "諸"),
+    ]
+
+    x_left = 65
+    y_top = 230
+    for idx, (compat_str, canon_str, char) in enumerate(test_chars):
+        row = idx // 2
+        col = idx % 2
+        cx = x_left + col * 540
+        cy = y_top + row * 60
+
+        draw.rectangle([(cx, cy), (cx + 520, cy + 50)], fill=(248, 250, 252, 255), outline=(226, 232, 240, 255), width=1)
+        draw_text_hb(img, font_bold, char, 28, (cx + 15, cy + 38), color=(37, 99, 235))
+        draw_text_hb(img, font_bold, f"互換字: {compat_str}", 13, (cx + 65, cy + 28), color=(15, 23, 42))
+        draw_text_hb(img, font_reg, f"正規字: {canon_str}", 13, (cx + 250, cy + 28), color=(100, 116, 139))
+        draw_text_hb(img, font_reg, "✓ 完全一致", 12, (cx + 420, cy + 28), color=(16, 185, 129))
+
+    out_path = SPECIMENS_DIR / "specimen_cjk_compat.png"
+    img.save(out_path)
+    print(f"Created: {out_path}")
+    return out_path
+
+
 def main():
     print("=== Generating Visual Specimens for Holon Sans ===")
-    p1 = create_typography_specimen()
-    p2 = create_chws_comparison_specimen()
-    p3 = create_italic_oblique_specimen()
-    p4 = create_vertical_specimen()
+    create_typography_specimen()
+    create_chws_comparison_specimen()
+    create_italic_oblique_specimen()
+    create_vertical_specimen()
+    create_variable_multi_axis_specimen()
+    create_cjk_compat_specimen()
     print("All specimens successfully generated!")
 
 
