@@ -1,0 +1,23 @@
+# Temporary & scratch directories
+tmp/
+scratch/
+
+# Generated fonts (do not commit until finished)
+*.ttf
+*.otf
+*.woff
+*.woff2
+fonts/
+
+# OFL.txt (committed only when fonts are committed)
+OFL.txt
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# OS artifacts
+.DS_Store
