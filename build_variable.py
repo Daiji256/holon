@@ -326,8 +326,146 @@ def update_variable_metadata(font: TTFont) -> None:
             font["vmtx"].metrics[g_3000] = (1000, 880)
 
 
+def install_enhanced_chws() -> None:
+    """Enhance east_asian_spacing GlyphSets with comprehensive JIS X 4051 yakumono rules:
+    - Middle dots and colons/semicolons (・：；) adjacent to each other compacted to half_em (360 UPM gap)
+    - Middle dots and colons adjacent to opening brackets compacted to quad_em (250 UPM gap)
+    - Middle dots and colons adjacent to closing brackets compacted to quad_em (250 UPM gap)
+    - Middle dots and colons adjacent to fullwidth space compacted to 1.0 em total
+    - Fullwidth colon (：) followed by ASCII space compacted to avoid redundant gap
+    - Vertical flow (vchw) applies exact matching vertical rules
+    """
+    from east_asian_spacing.spacing import (
+        GlyphSets, Font,
+        PairPosBuilder, SinglePosBuilder, ChainContextPosBuilder, ChainContextualRule
+    )
+    from fontTools.otlLib.builder import buildValue
+
+    def custom_build_chws_lookup(self, font: Font, lookups, pos: GlyphSets.PosValues):
+        self.assert_font(font)
+        lookup_indices = []
+        ttfont = font.ttfont
+        glyph_order = set(ttfont.getGlyphOrder())
+        em = font.fullwidth_advance
+        half_em = math.floor(em / 2)
+        quad_em = math.floor(half_em / 2)
+
+        # In vertical flow, if uniFF1B is in font but missing from vertical middle, include it
+        if font.is_vertical:
+            if "uniFF1B" in glyph_order and "uniFF1B" not in pos.middle:
+                pos.middle = pos.middle + ("uniFF1B",)
+
+        if font.is_vertical:
+            half_left_val = buildValue({"YAdvance": -half_em})
+            quad_left_val = buildValue({"YAdvance": -quad_em})
+            half_right_val = buildValue({"YPlacement": half_em, "YAdvance": -half_em})
+            quad_right_val = buildValue({"YPlacement": quad_em, "YAdvance": -quad_em})
+        else:
+            half_left_val = buildValue({"XAdvance": -half_em})
+            quad_left_val = buildValue({"XAdvance": -quad_em})
+            half_right_val = buildValue({"XPlacement": -half_em, "XAdvance": -half_em})
+            quad_right_val = buildValue({"XPlacement": -quad_em, "XAdvance": -quad_em})
+
+        # 1. Type 2 Pair Positioning (adjust 1st glyph)
+        pair_pos_builder = PairPosBuilder(ttfont, None)
+
+        # Rule 1a: left (closing brackets, comma, period) followed by left, right, middle, space
+        pair_pos_builder.addClassPair(
+            None, pos.left, half_left_val,
+            pos.left + pos.right + pos.middle + pos.space + pos.na_left, None
+        )
+
+        # Rule 1b: middle (・：；) followed by middle (・：；) -> compact 1st middle by half_em
+        if pos.middle:
+            pair_pos_builder.addClassPair(
+                None, pos.middle, half_left_val,
+                pos.middle, None
+            )
+
+            # Rule 1c: middle (・：；) followed by space (　) -> compact 1st middle by half_em
+            if pos.space:
+                pair_pos_builder.addClassPair(
+                    None, pos.middle, half_left_val,
+                    pos.space, None
+                )
+
+            # Rule 1d: middle (・：；) followed by left (closing brackets) -> compact middle by quad_em (四分アキ)
+            if pos.left:
+                pair_pos_builder.addClassPair(
+                    None, pos.middle, quad_left_val,
+                    pos.left, None
+                )
+
+        # Rule 1e: colon followed by ASCII space
+        if "uniFF1A" in glyph_order and "space" in glyph_order:
+            pair_pos_builder.addGlyphPair(
+                None, "uniFF1A", half_left_val,
+                "space", None
+            )
+        if "uniFF1A.vert" in glyph_order and "space" in glyph_order:
+            pair_pos_builder.addGlyphPair(
+                None, "uniFF1A.vert", half_left_val,
+                "space", None
+            )
+
+        lookup = pair_pos_builder.build()
+        assert lookup
+        lookup_indices.append(len(lookups))
+        lookups.append(lookup)
+
+        # 2. Single Pos Lookups for chaining context (adjust 2nd glyph)
+        single_pos_lookup_right = self._build_single_pos_lookup(
+            font, lookups, ((pos.right, half_right_val),)
+        )
+        single_pos_lookup_mid_half = self._build_single_pos_lookup(
+            font, lookups, ((pos.middle, half_right_val),)
+        )
+        single_pos_lookup_mid_quad = self._build_single_pos_lookup(
+            font, lookups, ((pos.middle, quad_right_val),)
+        )
+
+        # 3. Type 8 Chain Contextual Positioning
+        chain_builder = ChainContextPosBuilder(ttfont, None)
+
+        # Rule 2a: right opening bracket after right, middle, space
+        chain_builder.rules.append(
+            ChainContextualRule(
+                [pos.right + pos.middle + pos.space + pos.na_right],
+                [pos.right], [], [[single_pos_lookup_right]]
+            )
+        )
+
+        # Rule 2b: middle after opening bracket -> shift middle by quad_em (四分アキ)
+        if pos.right and pos.middle:
+            chain_builder.rules.append(
+                ChainContextualRule(
+                    [pos.right],
+                    [pos.middle], [], [[single_pos_lookup_mid_quad]]
+                )
+            )
+
+        # Rule 2c: middle after fullwidth space -> shift middle by half_em
+        if pos.space and pos.middle:
+            chain_builder.rules.append(
+                ChainContextualRule(
+                    [pos.space],
+                    [pos.middle], [], [[single_pos_lookup_mid_half]]
+                )
+            )
+
+        lookup2 = chain_builder.build()
+        assert lookup2
+        lookup_indices.append(len(lookups))
+        lookups.append(lookup2)
+
+        return lookup_indices
+
+    GlyphSets._build_chws_lookup = custom_build_chws_lookup
+
+
 async def apply_chws(input_path: Path, output_path: Path) -> None:
-    """Inject chws and vchw OpenType feature rules using east_asian_spacing."""
+    """Inject chws and vchw OpenType feature rules using east_asian_spacing with enhanced JIS X 4051 rules."""
+    install_enhanced_chws()
     config = Config.default.clone()
     config.fullwidth_advance = 1000
     builder = Builder(str(input_path), config=config)

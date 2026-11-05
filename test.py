@@ -210,8 +210,8 @@ def create_typography_specimen() -> Path:
 
 
 def create_chws_comparison_specimen() -> Path:
-    """Generate specimen card demonstrating chws compaction including fullwidth space (U+3000)."""
-    width, height = 1200, 720
+    """Generate specimen card demonstrating chws compaction including middle dots (・：；) and fullwidth space."""
+    width, height = 1200, 880
     img = Image.new("RGBA", (width, height), (248, 249, 250, 255))
     draw = ImageDraw.Draw(img)
 
@@ -219,34 +219,37 @@ def create_chws_comparison_specimen() -> Path:
     font_bold = FONTS_DIR / "HolonSans-Bold.ttf"
 
     draw.rectangle([(40, 30), (1160, 100)], fill=(255, 255, 255, 255), outline=(225, 228, 232, 255), width=1)
-    draw_text_hb(img, font_bold, "Holon Sans — 約物半角ツメ（chws）＆ 全角スペース隣接検証", 24, (65, 68), color=(15, 23, 42))
+    draw_text_hb(img, font_bold, "Holon Sans — 約物半角ツメ（chws）＆ 中点・コロン（・：；）・空白検証", 24, (65, 68), color=(15, 23, 42))
 
+    sample_middle = "中点類・コロン連続： ・：；　および　・・・・　（連続中点類の自動二分ツメ）"
+    sample_brackets = "中点と括弧： 「・」「：」「；」　項目：「東京」　（括弧との四分・二分ツメ）"
     sample_consec = "連続約物： 「「連続開き括弧」」。（閉じ括弧と句点）"
-    sample_space_1 = "全角スペース隣接： 「東京」　「京都」。（全角スペースと約物）"
     sample_period_space = "句点＋全角空白： 東京都。　次の段落（句点余白＋全角空白のアキ量確認）"
     sample_space_2 = "約物混在： 開き「　全角スペース　」閉じ、　読点と空白、"
 
     # Card 1: chws OFF
-    draw.rectangle([(40, 120), (1160, 390)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
+    draw.rectangle([(40, 120), (1160, 470)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
     draw.rectangle([(65, 140), (230, 168)], fill=(239, 68, 68, 255))
     draw_text_hb(img, font_bold, "chws OFF (全角固定)", 13, (75, 160), color=(255, 255, 255))
-    draw_text_hb(img, font_reg, "「。　」で句点余白(0.5)＋空白(1.0)＝1.5文字分空いて間延びします", 14, (245, 160), color=(100, 116, 139))
+    draw_text_hb(img, font_reg, "「・：；」や「「」で全角のまま大きな空き（0.87em）が生じ、間延びします", 14, (245, 160), color=(100, 116, 139))
 
-    draw_text_hb(img, font_reg, sample_consec, 22, (65, 205), features={"chws": False}, color=(51, 65, 85))
-    draw_text_hb(img, font_reg, sample_space_1, 20, (65, 250), features={"chws": False}, color=(71, 85, 105))
-    draw_text_hb(img, font_reg, sample_period_space, 20, (65, 295), features={"chws": False}, color=(220, 38, 38))
-    draw_text_hb(img, font_reg, sample_space_2, 18, (65, 340), features={"chws": False}, color=(100, 116, 139))
+    draw_text_hb(img, font_reg, sample_middle, 20, (65, 205), features={"chws": False}, color=(220, 38, 38))
+    draw_text_hb(img, font_reg, sample_brackets, 20, (65, 250), features={"chws": False}, color=(51, 65, 85))
+    draw_text_hb(img, font_reg, sample_consec, 20, (65, 295), features={"chws": False}, color=(71, 85, 105))
+    draw_text_hb(img, font_reg, sample_period_space, 20, (65, 340), features={"chws": False}, color=(220, 38, 38))
+    draw_text_hb(img, font_reg, sample_space_2, 18, (65, 385), features={"chws": False}, color=(100, 116, 139))
 
     # Card 2: chws ON
-    draw.rectangle([(40, 410), (1160, 680)], fill=(255, 255, 255, 255), outline=(59, 130, 246, 255), width=2)
-    draw.rectangle([(65, 430), (230, 458)], fill=(37, 99, 235, 255))
-    draw_text_hb(img, font_bold, "chws ON (自動ツメ)", 13, (75, 450), color=(255, 255, 255))
-    draw_text_hb(img, font_bold, "句点余白が半角に詰められ、全角空白と合わせて正確に1.0文字分のアキに自動補正（JIS X 4051準拠）", 14, (245, 450), color=(37, 99, 235))
+    draw.rectangle([(40, 490), (1160, 840)], fill=(255, 255, 255, 255), outline=(59, 130, 246, 255), width=2)
+    draw.rectangle([(65, 510), (230, 538)], fill=(37, 99, 235, 255))
+    draw_text_hb(img, font_bold, "chws ON (自動ツメ)", 13, (75, 530), color=(255, 255, 255))
+    draw_text_hb(img, font_bold, "JIS X 4051準拠：中点類相互・括弧間・句点空白がすべて適正アキ（二分・四分）に自動補正", 14, (245, 530), color=(37, 99, 235))
 
-    draw_text_hb(img, font_reg, sample_consec, 22, (65, 495), features={"chws": True}, color=(15, 23, 42))
-    draw_text_hb(img, font_reg, sample_space_1, 20, (65, 540), features={"chws": True}, color=(30, 41, 59))
-    draw_text_hb(img, font_bold, sample_period_space, 20, (65, 585), features={"chws": True}, color=(16, 185, 129))
-    draw_text_hb(img, font_reg, sample_space_2, 18, (65, 630), features={"chws": True}, color=(51, 65, 85))
+    draw_text_hb(img, font_bold, sample_middle, 20, (65, 575), features={"chws": True}, color=(16, 185, 129))
+    draw_text_hb(img, font_reg, sample_brackets, 20, (65, 620), features={"chws": True}, color=(15, 23, 42))
+    draw_text_hb(img, font_reg, sample_consec, 20, (65, 665), features={"chws": True}, color=(30, 41, 59))
+    draw_text_hb(img, font_bold, sample_period_space, 20, (65, 710), features={"chws": True}, color=(16, 185, 129))
+    draw_text_hb(img, font_reg, sample_space_2, 18, (65, 755), features={"chws": True}, color=(51, 65, 85))
 
     out_path = SPECIMENS_DIR / "specimen_chws_comparison.png"
     img.save(out_path)
@@ -313,8 +316,8 @@ def create_vertical_specimen() -> Path:
         (885, "どこで生れたかとんと見当がつかぬ。"),
         (820, "何でも薄暗いじめじめした所で"),
         (755, "ニャーニャー泣いていた事だけは記憶している。」"),
-        (690, "縦書き約物テスト： 「（東京都）」ー新宿・渋谷。"),
-        (625, "全角コロン： ２０２６年 Ｈｏｌｏｎ Ｓａｎｓ。"),
+        (690, "縦書き約物テスト：「（東京都）」ー新宿・渋谷。"),
+        (625, "中点・コロン連続：・：；「・」『：』２０２６。"),
     ]
 
     for col_x, col_text in columns:
@@ -322,8 +325,8 @@ def create_vertical_specimen() -> Path:
 
     # Vertical vchw comparison columns (vchw ON vs vchw OFF)
     draw.rectangle([(485, 230), (595, 750)], fill=(248, 250, 252, 255), outline=(226, 232, 240, 255), width=1)
-    draw_text_vertical(img, font_bold, "【vchw ON 自動ツメ】 「「連続開き」」。（全角空白　隣接もツメ）", 18, (555, 250), features={"vert": True, "vrt2": True, "vchw": True}, color=(37, 99, 235))
-    draw_text_vertical(img, font_reg, "【vchw OFF 全角固定】 「「連続開き」」。（全角空白　隣接もツメ）", 18, (510, 250), features={"vert": True, "vrt2": True, "vchw": False}, color=(220, 38, 38))
+    draw_text_vertical(img, font_bold, "【vchw ON】 「「連続」」・：；「・」。（空白　ツメ）", 18, (555, 250), features={"vert": True, "vrt2": True, "vchw": True}, color=(37, 99, 235))
+    draw_text_vertical(img, font_reg, "【vchw OFF】 「「連続」」・：；「・」。（空白　ツメ）", 18, (510, 250), features={"vert": True, "vrt2": True, "vchw": False}, color=(220, 38, 38))
 
     # Side commentary panel (left side)
     draw.rectangle([(65, 230), (460, 750)], fill=(241, 245, 249, 255), outline=(203, 213, 225, 255), width=1)
@@ -331,6 +334,7 @@ def create_vertical_specimen() -> Path:
     points = [
         "・vert / vrt2 による縦書き字形置換",
         "・vchw による縦書き約物半角ツメ（連続括弧・句読点）",
+        "・中点類（・：；）相互の自動二分ツメ＆括弧四分ツメ",
         "・全角空白（U+3000）隣接時の自動送り調整",
         "・全角コロン（：）の縦書き正立配置",
         "・かぎ括弧「」や波ダッシュ〜、音引きーの縦回転",
