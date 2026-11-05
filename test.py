@@ -354,22 +354,23 @@ def create_vertical_specimen() -> Path:
 
 
 def create_variable_multi_axis_specimen() -> Path:
-    """Generate specimen card demonstrating 3-axis variable font: Weight, Slant, and Grade."""
+    """Generate specimen card demonstrating 2-file variable font architecture: Roman & Italic."""
     width, height = 1200, 1100
     img = Image.new("RGBA", (width, height), (248, 249, 250, 255))
     draw = ImageDraw.Draw(img)
 
     font_var = FONTS_DIR / "HolonSans-Variable.otf"
+    font_it_var = FONTS_DIR / "HolonSans-Italic-Variable.otf"
     font_bold = FONTS_DIR / "HolonSans-Bold.ttf"
     font_reg = FONTS_DIR / "HolonSans-Regular.ttf"
 
     # Header
     draw.rectangle([(40, 30), (1160, 100)], fill=(255, 255, 255, 255), outline=(225, 228, 232, 255), width=1)
-    draw_text_hb(img, font_bold, "Holon Sans — 3軸バリアブルフォント（Weight / Slant / Grade）", 24, (65, 68), color=(15, 23, 42))
+    draw_text_hb(img, font_bold, "Holon Sans — 2ファイル分離バリアブルフォント（Google Fonts / 業界標準）", 24, (65, 68), color=(15, 23, 42))
 
-    # Panel 1: Weight Axis (wght: 100 -> 700)
+    # Panel 1: Roman Variable Font (Weight: 100 -> 700)
     draw.rectangle([(40, 120), (1160, 420)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
-    draw_text_hb(img, font_bold, "1. Weight 軸（wght: 100 〜 700）のシームレスな連続変化", 16, (65, 150), color=(37, 99, 235))
+    draw_text_hb(img, font_bold, "1. 直立バリアブルフォント（HolonSans-Variable.otf）: Weight 100 〜 700", 16, (65, 150), color=(37, 99, 235))
     
     weights = [
         (100, "Thin (100)"),
@@ -382,25 +383,18 @@ def create_variable_multi_axis_specimen() -> Path:
     for w_val, label in weights:
         draw_text_hb(img, font_reg, label, 12, (65, y_pos + 16), color=(100, 116, 139))
         sample = "Holon Sans 美しい文字の調和。The quick brown fox jumps."
-        draw_text_hb(img, font_var, sample, 20, (190, y_pos + 18), variations={"wght": w_val, "slnt": 0, "GRAD": 0}, color=(15, 23, 42))
+        draw_text_hb(img, font_var, sample, 20, (190, y_pos + 18), variations={"wght": w_val, "GRAD": 0}, color=(15, 23, 42))
         y_pos += 42
 
-    # Panel 2: Slant Axis (slnt: 0 -> -11)
+    # Panel 2: Italic Variable Font (Weight: 100 -> 700)
     draw.rectangle([(40, 440), (1160, 740)], fill=(255, 255, 255, 255), outline=(226, 232, 240, 255), width=1)
-    draw_text_hb(img, font_bold, "2. Slant 軸（slnt: 0° 〜 -11.0°）による和欧統一のオブリーク傾斜", 16, (65, 470), color=(147, 51, 234))
+    draw_text_hb(img, font_bold, "2. イタリックバリアブルフォント（HolonSans-Italic-Variable.otf）: 11.0° 傾斜", 16, (65, 470), color=(147, 51, 234))
 
-    slants = [
-        (0.0, "直立 0.0°"),
-        (-3.0, "微傾 -3.0°"),
-        (-6.0, "中傾 -6.0°"),
-        (-9.0, "深傾 -9.0°"),
-        (-11.0, "イタリック -11°"),
-    ]
     y_pos = 515
-    for s_val, label in slants:
-        draw_text_hb(img, font_reg, label, 12, (65, y_pos + 16), color=(100, 116, 139))
-        sample = "和文字も欧文も自然に11°傾斜。Continuous slant variation: 0° to -11°."
-        draw_text_hb(img, font_var, sample, 20, (190, y_pos + 18), variations={"wght": 400, "slnt": s_val, "GRAD": 0}, color=(15, 23, 42))
+    for w_val, label in weights:
+        draw_text_hb(img, font_reg, f"{label} Italic", 12, (65, y_pos + 16), color=(100, 116, 139))
+        sample = "和文も欧文も流麗に傾斜。Expressive Italic typography with 11° slant."
+        draw_text_hb(img, font_it_var, sample, 20, (190, y_pos + 18), variations={"wght": w_val, "GRAD": 0}, color=(15, 23, 42))
         y_pos += 42
 
     # Panel 3: Grade Axis (GRAD: -100 to +100) and Dark Mode compensation
@@ -411,14 +405,14 @@ def create_variable_multi_axis_specimen() -> Path:
     # Light mode box
     draw.rectangle([(65, 840), (585, 1030)], fill=(248, 250, 252, 255), outline=(226, 232, 240, 255), width=1)
     draw_text_hb(img, font_bold, "ライトモード (GRAD: 0)", 13, (85, 865), color=(15, 23, 42))
-    draw_text_hb(img, font_var, "白背景の標準ウェイト。レイアウトが完全に維持されます。", 15, (85, 910), variations={"wght": 400, "slnt": 0, "GRAD": 0}, color=(15, 23, 42))
-    draw_text_hb(img, font_var, "GRAD: +100 で視認性向上: 細部の線の太さのみが増加。", 14, (85, 960), variations={"wght": 400, "slnt": 0, "GRAD": 100}, color=(15, 23, 42))
+    draw_text_hb(img, font_var, "白背景の標準ウェイト。レイアウトが完全に維持されます。", 15, (85, 910), variations={"wght": 400, "GRAD": 0}, color=(15, 23, 42))
+    draw_text_hb(img, font_var, "GRAD: +100 で視認性向上: 細部の線の太さのみが増加。", 14, (85, 960), variations={"wght": 400, "GRAD": 100}, color=(15, 23, 42))
 
     # Dark mode box
     draw.rectangle([(615, 840), (1135, 1030)], fill=(15, 23, 42, 255))
     draw_text_hb(img, font_bold, "ダークモード光学補正 (GRAD: -100)", 13, (635, 865), color=(248, 250, 252))
-    draw_text_hb(img, font_var, "黒背景で光の膨張（ブルーム）を抑え、すっきり可読性を保つ。", 15, (635, 910), variations={"wght": 400, "slnt": 0, "GRAD": -100}, color=(241, 245, 249))
-    draw_text_hb(img, font_var, "送り幅はライトモードと完全一致し、行の折り返しは一切ズレません。", 14, (635, 960), variations={"wght": 400, "slnt": 0, "GRAD": -100}, color=(203, 213, 225))
+    draw_text_hb(img, font_var, "黒背景で光の膨張（ブルーム）を抑え、すっきり可読性を保つ。", 15, (635, 910), variations={"wght": 400, "GRAD": -100}, color=(241, 245, 249))
+    draw_text_hb(img, font_var, "送り幅はライトモードと完全一致し、行の折り返しは一切ズレません。", 14, (635, 960), variations={"wght": 400, "GRAD": -100}, color=(203, 213, 225))
 
     out_path = SPECIMENS_DIR / "specimen_variable_spectrum.png"
     img.save(out_path)

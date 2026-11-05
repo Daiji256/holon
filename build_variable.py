@@ -25,6 +25,7 @@ Typography features:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import copy
 import math
@@ -50,8 +51,10 @@ import ufoLib2
 GLYPHS_PATH = Path("tmp/sources-sans-jp/unzipped/sources/masters/IBM Plex Sans JP.glyphs")
 OUTPUT_DIR = Path("fonts")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-OUTPUT_VAR_OTF = OUTPUT_DIR / "HolonSans-Variable.otf"
-OUTPUT_VAR_WOFF2 = OUTPUT_DIR / "HolonSans-Variable.woff2"
+OUTPUT_VAR_ROMAN_OTF = OUTPUT_DIR / "HolonSans-Variable.otf"
+OUTPUT_VAR_ROMAN_WOFF2 = OUTPUT_DIR / "HolonSans-Variable.woff2"
+OUTPUT_VAR_ITALIC_OTF = OUTPUT_DIR / "HolonSans-Italic-Variable.otf"
+OUTPUT_VAR_ITALIC_WOFF2 = OUTPUT_DIR / "HolonSans-Italic-Variable.woff2"
 
 FAMILY_NAME = "Holon Sans"
 VENDOR_URL = "https://github.com/Daiji256/holon"
@@ -269,17 +272,19 @@ def make_grade_master(
     return new_f
 
 
-def update_variable_metadata(font: TTFont) -> None:
-    """Update OpenType name, OS/2, head, post tables strictly conforming to SIL OFL 1.1."""
+def update_variable_metadata(font: TTFont, italic: bool = False) -> None:
+    """Update OpenType name, OS/2, head, post, and STAT tables strictly conforming to SIL OFL 1.1."""
     name_table = font["name"]
-    ps_name = "HolonSans-Variable"
-    full_name = "Holon Sans"
+    ps_suffix = "ItalicVariable" if italic else "Variable"
+    ps_name = f"HolonSans-{ps_suffix}"
+    full_name = f"Holon Sans {'Italic' if italic else 'Regular'}"
+    subfamily = "Italic" if italic else "Regular"
     unique_id = f"1.000;NONE;{ps_name}"
 
     name_records = {
         0: COPYRIGHT_STRING,
         1: FAMILY_NAME,
-        2: "Regular",
+        2: subfamily,
         3: unique_id,
         4: full_name,
         5: "Version 1.000",
@@ -292,8 +297,8 @@ def update_variable_metadata(font: TTFont) -> None:
         13: LICENSE_DESCRIPTION,
         14: LICENSE_URL,
         16: FAMILY_NAME,
-        17: "Regular",
-        25: "HolonSans",  # Variations PostScriptName Prefix
+        17: subfamily,
+        25: "HolonSansItalic" if italic else "HolonSans",  # Variations PostScriptName Prefix
     }
 
     for record in list(name_table.names):
@@ -307,14 +312,14 @@ def update_variable_metadata(font: TTFont) -> None:
     # OS/2 table
     if "OS/2" in font:
         font["OS/2"].usWeightClass = 400
-        font["OS/2"].fsSelection = 0x40  # REGULAR
+        font["OS/2"].fsSelection = 0x01 if italic else 0x40  # 0x01: ITALIC, 0x40: REGULAR
         font["OS/2"].achVendID = "HLON"
 
     # head & post
     if "head" in font:
-        font["head"].macStyle = 0
+        font["head"].macStyle = 0x02 if italic else 0  # bit 1: Italic
     if "post" in font:
-        font["post"].italicAngle = 0.0
+        font["post"].italicAngle = -11.0 if italic else 0.0
 
     # Ensure fullwidth space (U+3000) has exact 1000 UPM advance width
     cmap_best = font.getBestCmap()
@@ -324,6 +329,44 @@ def update_variable_metadata(font: TTFont) -> None:
             font["hmtx"][g_3000] = (1000, 0)
         if "vmtx" in font:
             font["vmtx"].metrics[g_3000] = (1000, 880)
+
+    # Build cross-file linked STAT table conforming to Google Fonts / OpenType spec
+    from fontTools.otlLib.builder import buildStatTable
+    stat_axes = [
+        dict(
+            tag="wght",
+            name="Weight",
+            ordering=0,
+            values=[
+                dict(value=100, name="Thin"),
+                dict(value=200, name="ExtraLight"),
+                dict(value=300, name="Light"),
+                dict(value=400, name="Regular", flags=0x2, linkedValue=700),
+                dict(value=450, name="Text"),
+                dict(value=500, name="Medium"),
+                dict(value=600, name="SemiBold"),
+                dict(value=700, name="Bold"),
+            ],
+        ),
+        dict(
+            tag="GRAD",
+            name="Grade",
+            ordering=1,
+            values=[
+                dict(value=0, name="Normal", flags=0x2),
+            ],
+        ),
+        dict(
+            tag="ital",
+            name="Italic",
+            ordering=2,
+            values=[
+                dict(value=1.0, name="Italic", flags=0) if italic
+                else dict(value=0.0, name="Regular", flags=0x2, linkedValue=1.0)
+            ],
+        ),
+    ]
+    buildStatTable(font, stat_axes)
 
 
 def install_enhanced_chws() -> None:
@@ -506,19 +549,15 @@ def build_variable_font() -> Path:
     num_compat = add_cjk_compat_mappings([ufo_thin, ufo_reg, ufo_bold])
     print(f"Mapped {num_compat} CJK compatibility ideographs to canonical unified glyphs.")
 
-    # 4. Generate derived masters for Slant (slnt) and Grade (GRAD)
-    print("Generating Slanted masters (11.0° shear)...")
-    ufo_thin_slnt = make_slanted_master(ufo_thin, "Thin Slanted")
-    ufo_reg_slnt  = make_slanted_master(ufo_reg, "Regular Slanted")
-    ufo_bold_slnt = make_slanted_master(ufo_bold, "Bold Slanted")
-
-    print("Generating Grade masters (stroke variation with fixed metrics)...")
-    # Grade +100: +15% towards Bold; Grade -100: +15% towards Thin
-    ufo_reg_grad_pos = make_grade_master(ufo_reg, ufo_bold, 0.15, "Regular Grade+")
-    ufo_reg_grad_neg = make_grade_master(ufo_reg, ufo_thin, 0.15, "Regular Grade-")
-
-    # 5. Build multi-axis DesignSpace
-    print("Constructing 3-axis DesignSpace (wght, slnt, GRAD)...")
+def make_variable_designspace(
+    ufo_thin: ufoLib2.Font,
+    ufo_reg: ufoLib2.Font,
+    ufo_bold: ufoLib2.Font,
+    ufo_grad_pos: ufoLib2.Font,
+    ufo_grad_neg: ufoLib2.Font,
+    italic: bool,
+) -> DesignSpaceDocument:
+    """Build 2-axis DesignSpace (wght: 100..700, GRAD: -100..+100) for Roman or Italic."""
     var_ds = DesignSpaceDocument()
 
     # Axis: Weight
@@ -531,15 +570,6 @@ def build_variable_font() -> Path:
     ax_wght.map = [(100, 100), (400, 360), (700, 700)]
     var_ds.addAxis(ax_wght)
 
-    # Axis: Slant
-    ax_slnt = AxisDescriptor()
-    ax_slnt.tag = "slnt"
-    ax_slnt.name = "Slant"
-    ax_slnt.minimum = -11
-    ax_slnt.default = 0
-    ax_slnt.maximum = 0
-    var_ds.addAxis(ax_slnt)
-
     # Axis: Grade
     ax_grad = AxisDescriptor()
     ax_grad.tag = "GRAD"
@@ -549,16 +579,13 @@ def build_variable_font() -> Path:
     ax_grad.maximum = 100
     var_ds.addAxis(ax_grad)
 
-    # Sources
+    style_suffix = " Italic" if italic else ""
     sources_config = [
-        (ufo_thin,         {"Weight": 100, "Slant": 0,   "Grade": 0},    "Thin"),
-        (ufo_reg,          {"Weight": 360, "Slant": 0,   "Grade": 0},    "Regular"),
-        (ufo_bold,         {"Weight": 700, "Slant": 0,   "Grade": 0},    "Bold"),
-        (ufo_thin_slnt,    {"Weight": 100, "Slant": -11, "Grade": 0},    "Thin Slanted"),
-        (ufo_reg_slnt,     {"Weight": 360, "Slant": -11, "Grade": 0},    "Regular Slanted"),
-        (ufo_bold_slnt,    {"Weight": 700, "Slant": -11, "Grade": 0},    "Bold Slanted"),
-        (ufo_reg_grad_pos, {"Weight": 360, "Slant": 0,   "Grade": 100},  "Regular Grade+"),
-        (ufo_reg_grad_neg, {"Weight": 360, "Slant": 0,   "Grade": -100}, "Regular Grade-"),
+        (ufo_thin,     {"Weight": 100, "Grade": 0},    f"Thin{style_suffix}"),
+        (ufo_reg,      {"Weight": 360, "Grade": 0},    f"Regular{style_suffix}"),
+        (ufo_bold,     {"Weight": 700, "Grade": 0},    f"Bold{style_suffix}"),
+        (ufo_grad_pos, {"Weight": 360, "Grade": 100},  f"Regular{style_suffix} Grade+"),
+        (ufo_grad_neg, {"Weight": 360, "Grade": -100}, f"Regular{style_suffix} Grade-"),
     ]
 
     for font_obj, loc, sname in sources_config:
@@ -570,40 +597,51 @@ def build_variable_font() -> Path:
         src.styleName = sname
         var_ds.addSource(src)
 
-    # Named Instances
-    named_instances = [
-        ("Thin", 100, 0),
-        ("ExtraLight", 200, 0),
-        ("Light", 300, 0),
-        ("Regular", 400, 0),
-        ("Text", 450, 0),
-        ("Medium", 500, 0),
-        ("SemiBold", 600, 0),
-        ("Bold", 700, 0),
-        ("Thin Italic", 100, -11),
-        ("ExtraLight Italic", 200, -11),
-        ("Light Italic", 300, -11),
-        ("Italic", 400, -11),
-        ("Text Italic", 450, -11),
-        ("Medium Italic", 500, -11),
-        ("SemiBold Italic", 600, -11),
-        ("Bold Italic", 700, -11),
+    weight_instances = [
+        ("Thin", 100),
+        ("ExtraLight", 200),
+        ("Light", 300),
+        ("Regular" if not italic else "Italic", 400),
+        ("Text", 450),
+        ("Medium", 500),
+        ("SemiBold", 600),
+        ("Bold", 700),
     ]
 
-    for iname, w_val, s_val in named_instances:
+    for base_name, w_val in weight_instances:
+        if italic and base_name != "Italic":
+            iname = f"{base_name} Italic"
+        else:
+            iname = base_name
+
         inst = InstanceDescriptor()
         inst.familyName = FAMILY_NAME
         inst.styleName = iname
-        inst.location = {"Weight": w_val, "Slant": s_val, "Grade": 0}
+        inst.location = {"Weight": w_val, "Grade": 0}
         var_ds.addInstance(inst)
 
-    # 6. Compile CFF2 Variable Font
-    intermediate_otf = Path("tmp") / "HolonSans-Variable.intermediate.otf"
+    return var_ds
+
+
+def compile_and_process_vf(
+    var_ds: DesignSpaceDocument,
+    out_otf: Path,
+    out_woff2: Path,
+    italic: bool,
+    ufo_thin: ufoLib2.Font,
+    ufo_reg: ufoLib2.Font,
+    ufo_bold: ufoLib2.Font,
+    ufo_grad_pos: ufoLib2.Font,
+    ufo_grad_neg: ufoLib2.Font,
+) -> None:
+    """Compile CFF2, inject chws/vchw, and export OTF and WOFF2."""
+    style_label = "Italic" if italic else "Roman"
+    intermediate_otf = Path("tmp") / f"HolonSans-{style_label}-Variable.intermediate.otf"
     for attempt in range(10):
         try:
-            print(f"Compiling CFF2 variable font (attempt {attempt + 1})...")
+            print(f"Compiling CFF2 variable font ({style_label}, attempt {attempt + 1})...")
             var_font = ufo2ft.compileVariableCFF2(var_ds)
-            update_variable_metadata(var_font)
+            update_variable_metadata(var_font, italic=italic)
             var_font.save(intermediate_otf)
             print(f"Intermediate variable font saved: {intermediate_otf}")
             break
@@ -614,37 +652,129 @@ def build_variable_font() -> Path:
                 bad_glyph = m.group(1)
                 print(f"Fixing incompatible glyph across masters: '{bad_glyph}'")
                 sync_glyph(ufo_thin, ufo_reg, ufo_bold, bad_glyph)
-                # Re-derive affected masters for this glyph
-                for gname in [bad_glyph]:
-                    if gname in ufo_reg:
-                        ufo_thin_slnt[gname] = ufo_reg_slnt[gname].copy()
-                        ufo_bold_slnt[gname] = ufo_reg_slnt[gname].copy()
-                        ufo_reg_grad_pos[gname] = ufo_reg[gname].copy()
-                        ufo_reg_grad_neg[gname] = ufo_reg[gname].copy()
+                if bad_glyph in ufo_reg:
+                    ufo_grad_pos[bad_glyph] = ufo_reg[bad_glyph].copy()
+                    ufo_grad_neg[bad_glyph] = ufo_reg[bad_glyph].copy()
                 continue
-            raise RuntimeError(f"Variable compilation failed: {e}") from e
+            raise RuntimeError(f"Variable compilation failed ({style_label}): {e}") from e
 
-    # 7. Inject chws / vchw contextual spacing
-    print("Injecting chws / vchw contextual spacing...")
-    asyncio.run(apply_chws(intermediate_otf, OUTPUT_VAR_OTF))
+    # Inject chws / vchw contextual spacing
+    print(f"Injecting chws / vchw contextual spacing ({style_label})...")
+    asyncio.run(apply_chws(intermediate_otf, out_otf))
 
-    # 8. Export WOFF2 web format
-    print("Exporting web WOFF2 format...")
-    otf_for_woff2 = TTFont(OUTPUT_VAR_OTF)
+    # Export web WOFF2 format
+    print(f"Exporting web WOFF2 format ({style_label})...")
+    otf_for_woff2 = TTFont(out_otf)
     otf_for_woff2.flavor = "woff2"
-    otf_for_woff2.save(OUTPUT_VAR_WOFF2)
+    otf_for_woff2.save(out_woff2)
 
     # Clean intermediate
     if intermediate_otf.exists():
         intermediate_otf.unlink()
 
+    print(f"Successfully generated {style_label} Variable Font:")
+    print(f"  OTF:   {out_otf} ({out_otf.stat().st_size:,} bytes)")
+    print(f"  WOFF2: {out_woff2} ({out_woff2.stat().st_size:,} bytes)")
+
+
+def build_variable_fonts(style: str = "both") -> list[Path]:
+    if not GLYPHS_PATH.exists():
+        raise FileNotFoundError(f"Source glyphs file not found: {GLYPHS_PATH}")
+
+    print("=== Building Holon Sans Variable Fonts (Google Fonts 2-File Architecture) ===")
+    t0 = time.time()
+    font = GSFont(str(GLYPHS_PATH))
+    print(f"Loaded Glyphs source in {time.time() - t0:.1f}s.")
+
+    ds = to_designspace(font)
+    ufo_thin = ds.sources[0].font
+    ufo_reg  = ds.sources[1].font
+    ufo_bold = ds.sources[2].font
+
+    # Set family name on base UFOs
+    for u in [ufo_thin, ufo_reg, ufo_bold]:
+        u.info.familyName = FAMILY_NAME
+
+    # 1. Synchronize initial incompatible special symbols
+    print(f"Synchronizing {len(INITIAL_SYNC_GLYPHS)} special symbols...")
+    for gname in INITIAL_SYNC_GLYPHS:
+        sync_glyph(ufo_thin, ufo_reg, ufo_bold, gname)
+
+    # 2. Dual-scale Japanese (0.97x centered) and Latin (1.02x)
+    print("Applying dual-scale balance (0.97x CJK, 1.02x Latin)...")
+    for u in [ufo_thin, ufo_reg, ufo_bold]:
+        apply_dual_scale(u)
+
+    # 3. Add safe CJK Compatibility Ideographs mappings
+    num_compat = add_cjk_compat_mappings([ufo_thin, ufo_reg, ufo_bold])
+    print(f"Mapped {num_compat} CJK compatibility ideographs to canonical unified glyphs.")
+
+    built_paths = []
+
+    # Build Roman Variable Font
+    if style in ("roman", "both"):
+        print("\n--- Generating Roman Variable Font ---")
+        ufo_reg_grad_pos = make_grade_master(ufo_reg, ufo_bold, 0.15, "Regular Grade+")
+        ufo_reg_grad_neg = make_grade_master(ufo_reg, ufo_thin, 0.15, "Regular Grade-")
+        ds_roman = make_variable_designspace(
+            ufo_thin, ufo_reg, ufo_bold, ufo_reg_grad_pos, ufo_reg_grad_neg, italic=False
+        )
+        compile_and_process_vf(
+            ds_roman,
+            OUTPUT_VAR_ROMAN_OTF,
+            OUTPUT_VAR_ROMAN_WOFF2,
+            italic=False,
+            ufo_thin=ufo_thin,
+            ufo_reg=ufo_reg,
+            ufo_bold=ufo_bold,
+            ufo_grad_pos=ufo_reg_grad_pos,
+            ufo_grad_neg=ufo_reg_grad_neg,
+        )
+        built_paths.append(OUTPUT_VAR_ROMAN_OTF)
+
+    # Build Italic Variable Font
+    if style in ("italic", "both"):
+        print("\n--- Generating Italic Variable Font (11.0° Slanted) ---")
+        ufo_thin_it = make_slanted_master(ufo_thin, "Thin Italic")
+        ufo_reg_it  = make_slanted_master(ufo_reg, "Regular Italic")
+        ufo_bold_it = make_slanted_master(ufo_bold, "Bold Italic")
+
+        ufo_reg_it_grad_pos = make_grade_master(ufo_reg_it, ufo_bold_it, 0.15, "Regular Italic Grade+")
+        ufo_reg_it_grad_neg = make_grade_master(ufo_reg_it, ufo_thin_it, 0.15, "Regular Italic Grade-")
+
+        ds_italic = make_variable_designspace(
+            ufo_thin_it, ufo_reg_it, ufo_bold_it, ufo_reg_it_grad_pos, ufo_reg_it_grad_neg, italic=True
+        )
+        compile_and_process_vf(
+            ds_italic,
+            OUTPUT_VAR_ITALIC_OTF,
+            OUTPUT_VAR_ITALIC_WOFF2,
+            italic=True,
+            ufo_thin=ufo_thin_it,
+            ufo_reg=ufo_reg_it,
+            ufo_bold=ufo_bold_it,
+            ufo_grad_pos=ufo_reg_it_grad_pos,
+            ufo_grad_neg=ufo_reg_it_grad_neg,
+        )
+        built_paths.append(OUTPUT_VAR_ITALIC_OTF)
+
     print(f"\n==========================================")
-    print(f"Holon Sans Variable Font Build COMPLETE!")
-    print(f"  OTF:   {OUTPUT_VAR_OTF} ({OUTPUT_VAR_OTF.stat().st_size:,} bytes)")
-    print(f"  WOFF2: {OUTPUT_VAR_WOFF2} ({OUTPUT_VAR_WOFF2.stat().st_size:,} bytes)")
+    print(f"Variable Font Generation COMPLETE!")
     print(f"==========================================")
-    return OUTPUT_VAR_OTF
+    return built_paths
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Build Holon Sans Variable Fonts (CFF2 / OTF + WOFF2)")
+    parser.add_argument(
+        "--style",
+        choices=["roman", "italic", "both"],
+        default="both",
+        help="Which style variable font to build (default: both)",
+    )
+    args = parser.parse_args()
+    build_variable_fonts(style=args.style)
 
 
 if __name__ == "__main__":
-    build_variable_font()
+    main()
