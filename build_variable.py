@@ -103,6 +103,52 @@ INITIAL_SYNC_GLYPHS = [
 ]
 
 
+def add_vertical_semicolon_to_ufo(ufo: ufoLib2.Font) -> None:
+    """Create vertical semicolon glyph rotated 90° clockwise around (500, 378)."""
+    src_name = None
+    vert_name = None
+    if "semicolon.full" in ufo:
+        src_name = "semicolon.full"
+        vert_name = "semicolon.full.vert"
+    elif "uniFF1B" in ufo:
+        src_name = "uniFF1B"
+        vert_name = "uniFF1B.vert"
+    else:
+        print("Warning: Neither semicolon.full nor uniFF1B found in UFO!")
+        return
+
+    if vert_name in ufo:
+        return
+
+    src_g = ufo[src_name]
+    ng = ufo.newGlyph(vert_name)
+    ng.width = 1000
+    ng.height = 1000
+    ng.verticalOrigin = 880
+
+    ppen = ng.getPointPen()
+    t_pen = TransformPointPen(ppen, (0.0, -1.0, 1.0, 0.0, 122.0, 878.0))
+    src_g.drawPoints(t_pen)
+    print(f"Created {vert_name} in UFO from {src_name}.")
+
+
+def update_vertical_features(fea_text: str) -> str:
+    """Add 'sub semicolon.full by semicolon.full.vert;' or 'sub uniFF1B by uniFF1B.vert;' to vert and vrt2 feature blocks."""
+    # Handle colon.full -> colon.full.vert
+    pattern_full = r"(feature\s+(?:vert|vrt2)\s*\{[^}]*?sub\s+colon\.full\s+by\s+colon\.full\.vert;)"
+    def repl_full(m):
+        return m.group(1) + "\n     sub semicolon.full by semicolon.full.vert;"
+    fea_text = re.sub(pattern_full, repl_full, fea_text)
+
+    # Handle uniFF1A -> uniFF1A.vert
+    pattern_uni = r"(feature\s+(?:vert|vrt2)\s*\{[^}]*?sub\s+uniFF1A\s+by\s+uniFF1A\.vert;)"
+    def repl_uni(m):
+        return m.group(1) + "\n    sub uniFF1B by uniFF1B.vert;"
+    fea_text = re.sub(pattern_uni, repl_uni, fea_text)
+
+    return fea_text
+
+
 def sync_glyph(ufo_thin, ufo_reg, ufo_bold, gname: str) -> None:
     """Synchronize non-interpolatable glyph outlines from Regular master."""
     if gname in ufo_reg:
@@ -393,10 +439,11 @@ def install_enhanced_chws() -> None:
         half_em = math.floor(em / 2)
         quad_em = math.floor(half_em / 2)
 
-        # In vertical flow, if uniFF1B is in font but missing from vertical middle, include it
+        # In vertical flow, ensure uniFF1B and uniFF1B.vert are recognized in pos.middle
         if font.is_vertical:
-            if "uniFF1B" in glyph_order and "uniFF1B" not in pos.middle:
-                pos.middle = pos.middle + ("uniFF1B",)
+            for g in ("uniFF1B.vert", "uniFF1B"):
+                if g in glyph_order and g not in pos.middle:
+                    pos.middle = pos.middle + (g,)
 
         if font.is_vertical:
             half_left_val = buildValue({"YAdvance": -half_em})
@@ -448,6 +495,11 @@ def install_enhanced_chws() -> None:
         if "uniFF1A.vert" in glyph_order and "space" in glyph_order:
             pair_pos_builder.addGlyphPair(
                 None, "uniFF1A.vert", half_left_val,
+                "space", None
+            )
+        if "uniFF1B.vert" in glyph_order and "space" in glyph_order:
+            pair_pos_builder.addGlyphPair(
+                None, "uniFF1B.vert", half_left_val,
                 "space", None
             )
 
@@ -516,38 +568,6 @@ async def apply_chws(input_path: Path, output_path: Path) -> None:
     if not res:
         raise RuntimeError(f"Failed to inject chws into {input_path}")
 
-
-def build_variable_font() -> Path:
-    if not GLYPHS_PATH.exists():
-        raise FileNotFoundError(f"Source glyphs file not found: {GLYPHS_PATH}")
-
-    print("=== Building Holon Sans Multi-Axis Variable Font (CFF2) ===")
-    t0 = time.time()
-    font = GSFont(str(GLYPHS_PATH))
-    print(f"Loaded Glyphs source in {time.time() - t0:.1f}s.")
-
-    ds = to_designspace(font)
-    ufo_thin = ds.sources[0].font
-    ufo_reg  = ds.sources[1].font
-    ufo_bold = ds.sources[2].font
-
-    # Set family name on base UFOs
-    for u in [ufo_thin, ufo_reg, ufo_bold]:
-        u.info.familyName = FAMILY_NAME
-
-    # 1. Synchronize initial incompatible special symbols
-    print(f"Synchronizing {len(INITIAL_SYNC_GLYPHS)} special symbols...")
-    for gname in INITIAL_SYNC_GLYPHS:
-        sync_glyph(ufo_thin, ufo_reg, ufo_bold, gname)
-
-    # 2. Dual-scale Japanese (0.97x centered) and Latin (1.02x)
-    print("Applying dual-scale balance (0.97x CJK, 1.02x Latin)...")
-    for u in [ufo_thin, ufo_reg, ufo_bold]:
-        apply_dual_scale(u)
-
-    # 3. Add safe CJK Compatibility Ideographs mappings
-    num_compat = add_cjk_compat_mappings([ufo_thin, ufo_reg, ufo_bold])
-    print(f"Mapped {num_compat} CJK compatibility ideographs to canonical unified glyphs.")
 
 def make_variable_designspace(
     ufo_thin: ufoLib2.Font,
@@ -694,6 +714,12 @@ def build_variable_fonts(style: str = "both") -> list[Path]:
     # Set family name on base UFOs
     for u in [ufo_thin, ufo_reg, ufo_bold]:
         u.info.familyName = FAMILY_NAME
+
+    # 0. Add vertical semicolon (uniFF1B.vert) to all masters and update vert/vrt2
+    print("Adding vertical semicolon (uniFF1B.vert) to UFO masters and updating vert/vrt2...")
+    for u in [ufo_thin, ufo_reg, ufo_bold]:
+        add_vertical_semicolon_to_ufo(u)
+        u.features.text = update_vertical_features(u.features.text)
 
     # 1. Synchronize initial incompatible special symbols
     print(f"Synchronizing {len(INITIAL_SYNC_GLYPHS)} special symbols...")

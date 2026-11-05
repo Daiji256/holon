@@ -167,6 +167,57 @@ def update_name_table(font: TTFont, weight: str, italic: bool) -> None:
             name_table.addMultilingualName({"en": val}, nameID=name_id)
 
 
+def add_vertical_semicolon(font_jp: TTFont) -> None:
+    """Add uniFF1B.vert (rotated 90° CW around (500, 378)) and update vert/vrt2 in GSUB."""
+    glyf = font_jp["glyf"]
+    hmtx = font_jp["hmtx"]
+    vmtx = font_jp.get("vmtx")
+
+    if "uniFF1B" not in glyf or "uniFF1B.vert" in glyf:
+        return
+
+    # Draw uniFF1B with 90° CW rotation around (500, 378)
+    # x' = y + 122
+    # y' = 878 - x
+    glyph_set = font_jp.getGlyphSet()
+    rec_pen = DecomposingRecordingPen(glyph_set)
+    glyph_set["uniFF1B"].draw(rec_pen)
+
+    tt_pen = TTGlyphPen(None)
+    t_pen = TransformPen(tt_pen, (0.0, -1.0, 1.0, 0.0, 122.0, 878.0))
+    rec_pen.replay(t_pen)
+
+    new_glyph = tt_pen.glyph()
+    new_glyph.recalcBounds(glyf)
+
+    glyf["uniFF1B.vert"] = new_glyph
+    hmtx["uniFF1B.vert"] = (1000, new_glyph.xMin)
+
+    if vmtx is not None:
+        tsb = 880 - (new_glyph.yMax if new_glyph.numberOfContours != 0 else 0)
+        vmtx.metrics["uniFF1B.vert"] = (1000, tsb)
+
+    order = font_jp.getGlyphOrder()
+    if "uniFF1B.vert" not in order:
+        order.append("uniFF1B.vert")
+        font_jp.setGlyphOrder(order)
+        font_jp["maxp"].numGlyphs = len(order)
+        if font_jp.get("vhea") and vmtx:
+            font_jp["vhea"].numOfLongVerMetrics = len(order)
+
+    # Update GSUB vert and vrt2 features
+    if "GSUB" in font_jp:
+        gsub = font_jp["GSUB"].table
+        for rec in gsub.FeatureList.FeatureRecord:
+            if rec.FeatureTag in ("vert", "vrt2"):
+                for idx in rec.Feature.LookupListIndex:
+                    lookup = gsub.LookupList.Lookup[idx]
+                    if lookup.LookupType == 1:
+                        for st in lookup.SubTable:
+                            if hasattr(st, "mapping") and "uniFF1A" in st.mapping:
+                                st.mapping["uniFF1B"] = "uniFF1B.vert"
+
+
 def transform_cjk_glyphs(
     font_jp: TTFont,
     italic: bool,
@@ -183,6 +234,11 @@ def transform_cjk_glyphs(
     cjk_gnames = set()
     for code, gname in cmap_jp.items():
         if not is_latin_or_symbol(code):
+            cjk_gnames.add(gname)
+
+    # Include vertical punctuation alternates so they are scaled and slanted consistently
+    for gname in ["uniFF1A.vert", "uniFF1B.vert"]:
+        if gname in glyf_table:
             cjk_gnames.add(gname)
 
     # Compute transformation matrix
@@ -336,10 +392,11 @@ def install_enhanced_chws() -> None:
         half_em = math.floor(em / 2)
         quad_em = math.floor(half_em / 2)
 
-        # In vertical flow, if uniFF1B is in font but missing from vertical middle, include it
+        # In vertical flow, ensure uniFF1B and uniFF1B.vert are recognized in pos.middle
         if font.is_vertical:
-            if "uniFF1B" in glyph_order and "uniFF1B" not in pos.middle:
-                pos.middle = pos.middle + ("uniFF1B",)
+            for g in ("uniFF1B.vert", "uniFF1B"):
+                if g in glyph_order and g not in pos.middle:
+                    pos.middle = pos.middle + (g,)
 
         if font.is_vertical:
             half_left_val = buildValue({"YAdvance": -half_em})
@@ -391,6 +448,11 @@ def install_enhanced_chws() -> None:
         if "uniFF1A.vert" in glyph_order and "space" in glyph_order:
             pair_pos_builder.addGlyphPair(
                 None, "uniFF1A.vert", half_left_val,
+                "space", None
+            )
+        if "uniFF1B.vert" in glyph_order and "space" in glyph_order:
+            pair_pos_builder.addGlyphPair(
+                None, "uniFF1B.vert", half_left_val,
                 "space", None
             )
 
@@ -468,6 +530,9 @@ def build_style(weight: str, italic: bool = False) -> Path:
     sans_path, jp_path = get_source_paths(weight, italic)
     font_sans = TTFont(sans_path)
     font_jp = TTFont(jp_path)
+
+    # 0. Add vertical semicolon (uniFF1B.vert) before CJK transform so it scales/slants consistently
+    add_vertical_semicolon(font_jp)
 
     # 1. Transform Japanese CJK glyphs (0.97x scale + optional 11° slant)
     print(f"Transforming CJK glyphs (scale={SCALE_JP}, italic={italic})...")
