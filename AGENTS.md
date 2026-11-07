@@ -5,7 +5,7 @@
 - **Base Typeface**: IBM Plex Sans, IBM Plex Mono & IBM Plex Sans JP (upstream: https://github.com/IBM/plex)
 - **Goal**: Create high-quality, comprehensive font families targeting English and Japanese (with room for future multilingual extensions):
   - **Holon Sans**: Dual-scaled proportional sans-serif (Japanese CJK 0.97x, Latin/symbols 1.02x) with contextual half-width spacing (`chws` / `vchw`), authentic Italic + 11.0° oblique CJK, and 2-file Variable Fonts (`wght` 100..700, `GRAD` -100..+100).
-  - **Holon Mono**: Strict 2:1 duospace programming monospace font (550 UPM halfwidth / 1100 UPM fullwidth, CJK 0.97x, authentic Italic + 9.0° oblique CJK, box-drawing alignment).
+  - **Holon Mono**: Strict 2:1 duospace programming monospace font (550 UPM halfwidth / 1100 UPM fullwidth, CJK 0.97x, authentic Italic + 9.0° oblique CJK, box-drawing alignment, and 2-file Variable Fonts (`wght` 100..700, `GRAD` -100..+100)).
 - **Compliance**:
   - Font name and internal OpenType table records must strictly exclude `IBM` and `Plex` to avoid trademark conflicts and comply with SIL OFL 1.1 requirements.
 

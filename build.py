@@ -179,6 +179,14 @@ ZIP_SOURCES = {
         "extract_dir": TMP_DIR / "sources-sans" / "unzipped",
         "target_path": TMP_DIR / "sources-sans" / "unzipped" / "sources" / "masters" / "IBM Plex Sans-Regular.ufo",
     },
+    "mono-variable": {
+        "tag": "@ibm/plex-mono-variable@1.0.0",
+        "url": "https://github.com/IBM/plex/releases/download/%40ibm/plex-mono-variable%401.0.0/sources.zip",
+        "sha256": "cead332365e44b09552581533bae5dcbbd6e6ac80265afa915981260ba75eef3",
+        "zip_path": TMP_DIR / "sources-mono-variable" / "sources.zip",
+        "extract_dir": TMP_DIR / "sources-mono-variable" / "unzipped",
+        "target_path": TMP_DIR / "sources-mono-variable" / "unzipped" / "source" / "IBM Plex Mono Var-Regular.ufo",
+    },
 }
 
 INITIAL_SYNC_GLYPHS = [
@@ -257,9 +265,12 @@ def ensure_ttf_source(rel_path: str) -> Path:
     return local_path
 
 
-def ensure_variable_sources() -> tuple[Path, Path]:
-    """Ensure variable font master sources (.glyphs and Sans .ufo) exist in tmp/."""
-    for key in ("sans-jp", "sans"):
+def ensure_variable_sources(for_family: str = "sans") -> tuple[Path, Path]:
+    """Ensure variable font master sources (.glyphs and Sans/Mono .ufo) exist in tmp/."""
+    keys = ("sans-jp", "sans") if for_family == "sans" else (
+        ("sans-jp", "mono-variable") if for_family == "mono" else ("sans-jp", "sans", "mono-variable")
+    )
+    for key in keys:
         info = ZIP_SOURCES[key]
         if info["target_path"].exists():
             continue
@@ -270,7 +281,8 @@ def ensure_variable_sources() -> tuple[Path, Path]:
         info["extract_dir"].mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(info["extract_dir"])
-    return ZIP_SOURCES["sans-jp"]["target_path"], ZIP_SOURCES["sans"]["target_path"].parent
+    second_key = "mono-variable" if for_family == "mono" else "sans"
+    return ZIP_SOURCES["sans-jp"]["target_path"], ZIP_SOURCES[second_key]["target_path"].parent
 
 
 # ---------------------------------------------------------------------------
@@ -1067,6 +1079,98 @@ def _apply_ufo_dual_scale(ufo: ufoLib2.Font) -> None:
                 g.width = int(round(g.width * SCALE_SANS))
 
 
+def _apply_ufo_mono_cjk_transform(ufo: ufoLib2.Font, italic: bool = False) -> None:
+    """Transform UFO glyphs to strict Holon Mono duospace metrics:
+    - Japanese / CJK glyphs: scaled 0.97x, centered in 1100 UPM cell (offset (65, 12)).
+      If italic, apply 9.0° shear around JP_CENTER_Y (400).
+    - Fullwidth space (U+3000): width 1100 UPM.
+    - Halfwidth symbols / non-CJK: width 550 or 1100 UPM.
+    """
+    slant = math.tan(math.radians(-MONO_ITALIC_ANGLE)) if italic else 0.0
+
+    for g in ufo:
+        unicodes = set(g.unicodes or [])
+        if g.unicode is not None:
+            unicodes.add(g.unicode)
+
+        if unicodes & {0x3000, 0x2003, 0x2001}:
+            g.width = FULL_WIDTH
+            continue
+        if unicodes & {0x2000, 0x2002}:
+            g.width = HALF_WIDTH
+            continue
+
+        is_cjk = is_cjk_glyph(g.name, g.unicode, box_is_latin=True)
+        if is_cjk:
+            g.width = FULL_WIDTH
+            for c in g.contours:
+                for p in c.points:
+                    px = p.x * SCALE_JP + MONO_JP_OFFSET_X
+                    py = p.y * SCALE_JP + MONO_JP_OFFSET_Y
+                    if italic:
+                        px += (py - JP_CENTER_Y) * slant
+                    p.x = px
+                    p.y = py
+        else:
+            if g.width == 500 or (0 < g.width < 850):
+                g.width = HALF_WIDTH
+            elif g.width > 0:
+                g.width = FULL_WIDTH
+
+
+def _merge_mono_variable_latin(
+    ufo_jp: ufoLib2.Font,
+    ufo_mono: ufoLib2.Font,
+    italic: bool = False,
+) -> None:
+    """Merge IBM Plex Mono Var Latin/symbol/box-drawing glyphs into Japanese UFO master."""
+    ufo_jp.kerning.clear()
+    ufo_mono.kerning.clear()
+
+    # Build unicode to glyph name mapping in JP UFO to prevent duplicate unicode mappings
+    u_to_jp_gname = {}
+    for g in ufo_jp:
+        for u in (g.unicodes or []):
+            u_to_jp_gname[u] = g.name
+
+    for g_mono in ufo_mono:
+        unicodes = set(g_mono.unicodes or [])
+        if g_mono.unicode is not None:
+            unicodes.add(g_mono.unicode)
+
+        if 0x3000 in unicodes:
+            continue
+
+        # Prevent duplicate unicode mapping: remove unicode from existing JP glyph if different
+        for u in unicodes:
+            if u in u_to_jp_gname and u_to_jp_gname[u] != g_mono.name:
+                old_gname = u_to_jp_gname[u]
+                if old_gname in ufo_jp:
+                    old_g = ufo_jp[old_gname]
+                    old_g.unicodes = [x for x in (old_g.unicodes or []) if x != u]
+
+        is_box = bool(unicodes & set(range(0x2500, 0x2580))) or "bxd" in g_mono.name or "block" in g_mono.name
+
+        ng = copy.deepcopy(g_mono)
+        if ng.width > 0:
+            ng.width = HALF_WIDTH
+
+        for c in ng.contours:
+            for p in c.points:
+                px = p.x * SCALE_MONO_X
+                py = p.y * SCALE_MONO_Y
+                if is_box:
+                    # Snap box drawing vertical boundaries to strict 950 and -225
+                    if p.y >= 900:
+                        py = 950.0
+                    elif p.y <= -200:
+                        py = -225.0
+                p.x = px
+                p.y = py
+
+        ufo_jp[ng.name] = ng
+
+
 def _make_slanted_master(ufo_src: ufoLib2.Font, name: str) -> ufoLib2.Font:
     """Create a slanted UFO master by applying 11.0° shear (CJK around cy=400, Latin around cy=0)."""
     s = math.tan(math.radians(-SANS_ITALIC_ANGLE))
@@ -1098,11 +1202,12 @@ def _make_grade_master(
     ufo_target: ufoLib2.Font,
     factor: float,
     name: str,
+    family_name: str = SANS_FAMILY,
 ) -> ufoLib2.Font:
     """Create a Grade master by interpolating stroke weight while locking advance widths to base."""
     new_f = ufoLib2.Font()
     new_f.info = copy.deepcopy(ufo_base.info)
-    new_f.info.familyName = SANS_FAMILY
+    new_f.info.familyName = family_name
     new_f.info.styleName = name
     new_f.features.text = ufo_base.features.text
     new_f.groups = copy.deepcopy(ufo_base.groups)
@@ -1149,6 +1254,7 @@ def _make_variable_designspace(
     ufo_grad_pos: ufoLib2.Font,
     ufo_grad_neg: ufoLib2.Font,
     italic: bool,
+    family_name: str = SANS_FAMILY,
 ) -> DesignSpaceDocument:
     var_ds = DesignSpaceDocument()
 
@@ -1177,13 +1283,13 @@ def _make_variable_designspace(
         src.font = font_obj
         src.location = loc
         src.name = src.styleName = sname
-        src.familyName = SANS_FAMILY
+        src.familyName = family_name
         var_ds.addSource(src)
 
     for w_name in WEIGHTS:
         iname, _, _ = style_names(w_name, italic)
         inst = InstanceDescriptor()
-        inst.familyName = SANS_FAMILY
+        inst.familyName = family_name
         inst.styleName = iname
         inst.location = {"Weight": WEIGHT_VALUES[w_name], "Grade": 0}
         var_ds.addInstance(inst)
@@ -1195,16 +1301,19 @@ def _compile_and_export_vf(
     var_ds: DesignSpaceDocument,
     italic: bool,
     masters: list[ufoLib2.Font],
+    family_name: str = SANS_FAMILY,
 ) -> Path:
     style_label = "Italic" if italic else "Roman"
+    family_compact = family_name.replace(" ", "")
+    is_mono = (family_name == MONO_FAMILY)
     ufo_thin, ufo_reg, ufo_bold, ufo_grad_pos, ufo_grad_neg = masters
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    inter_otf = TMP_DIR / f"HolonSans-{style_label}-Variable.inter.otf"
-    chws_otf = TMP_DIR / f"HolonSans-{style_label}-Variable.chws.otf"
+    inter_otf = TMP_DIR / f"{family_compact}-{style_label}-Variable.inter.otf"
+    chws_otf = TMP_DIR / f"{family_compact}-{style_label}-Variable.chws.otf"
 
-    for attempt in range(10):
+    for attempt in range(20):
         try:
-            print(f"Compiling CFF2 variable font ({style_label}, attempt {attempt + 1})...")
+            print(f"Compiling CFF2 variable font ({family_name} {style_label}, attempt {attempt + 1})...")
             var_font = ufo2ft.compileVariableCFF2(var_ds)
             break
         except Exception as e:
@@ -1215,19 +1324,48 @@ def _compile_and_export_vf(
                 for m_ufo in (ufo_thin, ufo_bold, ufo_grad_pos, ufo_grad_neg):
                     m_ufo[bad] = ufo_reg[bad].copy()
                 continue
-            raise RuntimeError(f"Variable compilation failed ({style_label}): {e}") from e
+            raise RuntimeError(f"Variable compilation failed ({family_name} {style_label}): {e}") from e
 
+    italic_angle = MONO_ITALIC_ANGLE if is_mono else SANS_ITALIC_ANGLE
     ps_suffix = apply_opentype_metadata(
-        var_font, SANS_FAMILY, "Regular", italic, SANS_ITALIC_ANGLE, is_variable=True
+        var_font, family_name, "Regular", italic, italic_angle, is_variable=True
     )
 
-    # Ensure U+3000 fullwidth space is exact 1000 UPM
-    cmap_best = var_font.getBestCmap()
-    if 0x3000 in cmap_best:
-        g_3000 = cmap_best[0x3000]
-        var_font["hmtx"][g_3000] = (1000, 0)
-        if "vmtx" in var_font:
-            var_font["vmtx"].metrics[g_3000] = (1000, 880)
+    if is_mono:
+        # Strict monospace / duospace adjustments
+        cmap_best = var_font.getBestCmap()
+        if 0x3000 in cmap_best:
+            g_3000 = cmap_best[0x3000]
+            var_font["hmtx"][g_3000] = (FULL_WIDTH, 0)
+            if "vmtx" in var_font:
+                var_font["vmtx"].metrics[g_3000] = (FULL_WIDTH, 880)
+        if 0x0020 in cmap_best:
+            g_0020 = cmap_best[0x0020]
+            var_font["hmtx"][g_0020] = (HALF_WIDTH, 0)
+            if "vmtx" in var_font:
+                var_font["vmtx"].metrics[g_0020] = (FULL_WIDTH, 880)
+
+        os2 = var_font["OS/2"]
+        hhea = var_font["hhea"]
+        os2.sTypoAscender = hhea.ascent = os2.usWinAscent = 950
+        os2.sTypoDescender = hhea.descent = -225
+        os2.usWinDescent = 225
+        os2.sTypoLineGap = hhea.lineGap = 0
+        os2.panose.bProportion = 9
+        var_font["post"].isFixedPitch = 0
+
+        if "GPOS" in var_font:
+            del var_font["GPOS"]
+        if "BASE" in var_font:
+            del var_font["BASE"]
+    else:
+        # Sans: Ensure U+3000 fullwidth space is exact 1000 UPM
+        cmap_best = var_font.getBestCmap()
+        if 0x3000 in cmap_best:
+            g_3000 = cmap_best[0x3000]
+            var_font["hmtx"][g_3000] = (1000, 0)
+            if "vmtx" in var_font:
+                var_font["vmtx"].metrics[g_3000] = (1000, 880)
 
     # Build cross-file linked STAT table
     stat_axes = [
@@ -1264,20 +1402,27 @@ def _compile_and_export_vf(
         ),
     ]
     buildStatTable(var_font, stat_axes)
-    var_font.save(inter_otf)
 
-    print(f"Injecting chws / vchw contextual spacing ({style_label})...")
-    asyncio.run(apply_chws(inter_otf, chws_otf))
-    inter_otf.unlink(missing_ok=True)
+    out_otf = OUTPUT_DIR / f"{family_compact}-{ps_suffix}.otf"
+    out_woff2 = OUTPUT_DIR / f"{family_compact}-{ps_suffix}.woff2"
 
-    out_otf = OUTPUT_DIR / f"HolonSans-{ps_suffix}.otf"
-    out_woff2 = OUTPUT_DIR / f"HolonSans-{ps_suffix}.woff2"
-    subset_and_export(chws_otf, out_otf, out_woff2, layout_features=["*"])
+    if is_mono:
+        var_font.save(inter_otf)
+        subset_and_export(inter_otf, out_otf, out_woff2, layout_features=MONO_SAFE_FEATURES)
+        inter_otf.unlink(missing_ok=True)
+    else:
+        var_font.save(inter_otf)
+        print(f"Injecting chws / vchw contextual spacing ({style_label})...")
+        asyncio.run(apply_chws(inter_otf, chws_otf))
+        inter_otf.unlink(missing_ok=True)
+        subset_and_export(chws_otf, out_otf, out_woff2, layout_features=["*"])
+        chws_otf.unlink(missing_ok=True)
+
     return out_otf
 
 
-def build_variable_fonts(style: str = "both") -> list[Path]:
-    glyphs_path, sans_masters_dir = ensure_variable_sources()
+def build_sans_variable_fonts(style: str = "both") -> list[Path]:
+    glyphs_path, sans_masters_dir = ensure_variable_sources("sans")
     print("\n=== Building Holon Sans Variable Fonts (2-File Architecture) ===")
     t0 = time.time()
     gs_font = GSFont(str(glyphs_path))
@@ -1315,20 +1460,105 @@ def build_variable_fonts(style: str = "both") -> list[Path]:
 
     built: list[Path] = []
     if style in ("roman", "both"):
-        ufo_gp = _make_grade_master(ufo_reg, ufo_bold, 0.15, "Regular Grade+")
-        ufo_gn = _make_grade_master(ufo_reg, ufo_thin, 0.15, "Regular Grade-")
-        ds_rom = _make_variable_designspace(ufo_thin, ufo_reg, ufo_bold, ufo_gp, ufo_gn, italic=False)
-        built.append(_compile_and_export_vf(ds_rom, False, [ufo_thin, ufo_reg, ufo_bold, ufo_gp, ufo_gn]))
+        ufo_gp = _make_grade_master(ufo_reg, ufo_bold, 0.15, "Regular Grade+", family_name=SANS_FAMILY)
+        ufo_gn = _make_grade_master(ufo_reg, ufo_thin, 0.15, "Regular Grade-", family_name=SANS_FAMILY)
+        ds_rom = _make_variable_designspace(ufo_thin, ufo_reg, ufo_bold, ufo_gp, ufo_gn, italic=False, family_name=SANS_FAMILY)
+        built.append(_compile_and_export_vf(ds_rom, False, [ufo_thin, ufo_reg, ufo_bold, ufo_gp, ufo_gn], family_name=SANS_FAMILY))
 
     if style in ("italic", "both"):
         u_t_it = _make_slanted_master(ufo_thin, "Thin Italic")
         u_r_it = _make_slanted_master(ufo_reg, "Regular Italic")
         u_b_it = _make_slanted_master(ufo_bold, "Bold Italic")
-        u_gp_it = _make_grade_master(u_r_it, u_b_it, 0.15, "Regular Italic Grade+")
-        u_gn_it = _make_grade_master(u_r_it, u_t_it, 0.15, "Regular Italic Grade-")
-        ds_it = _make_variable_designspace(u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it, italic=True)
-        built.append(_compile_and_export_vf(ds_it, True, [u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it]))
+        u_gp_it = _make_grade_master(u_r_it, u_b_it, 0.15, "Regular Italic Grade+", family_name=SANS_FAMILY)
+        u_gn_it = _make_grade_master(u_r_it, u_t_it, 0.15, "Regular Italic Grade-", family_name=SANS_FAMILY)
+        ds_it = _make_variable_designspace(u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it, italic=True, family_name=SANS_FAMILY)
+        built.append(_compile_and_export_vf(ds_it, True, [u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it], family_name=SANS_FAMILY))
 
+    return built
+
+
+def build_mono_variable_fonts(style: str = "both") -> list[Path]:
+    glyphs_path, mono_masters_dir = ensure_variable_sources("mono")
+    print("\n=== Building Holon Mono Variable Fonts (2-File Architecture) ===")
+    t0 = time.time()
+    gs_font = GSFont(str(glyphs_path))
+    print(f"Loaded Glyphs source in {time.time() - t0:.1f}s.")
+
+    ds = to_designspace(gs_font)
+    u_jp_thin, u_jp_reg, u_jp_bold = ds.sources[0].font, ds.sources[1].font, ds.sources[2].font
+
+    for u in (u_jp_thin, u_jp_reg, u_jp_bold):
+        u.info.familyName = MONO_FAMILY
+        _add_vertical_semicolon_to_ufo(u)
+
+    for gname in INITIAL_SYNC_GLYPHS:
+        if gname in u_jp_reg:
+            u_jp_thin[gname] = u_jp_reg[gname].copy()
+            u_jp_bold[gname] = u_jp_reg[gname].copy()
+
+    code_to_gname = {u: g.name for g in u_jp_reg for u in (g.unicodes or [])}
+    for code in range(0xF900, 0xFB00):
+        if code not in code_to_gname:
+            d = unicodedata.normalize("NFKD", chr(code))
+            if len(d) == 1 and ord(d) in code_to_gname:
+                cg = code_to_gname[ord(d)]
+                for ufo in (u_jp_thin, u_jp_reg, u_jp_bold):
+                    if cg in ufo:
+                        ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
+
+    built: list[Path] = []
+
+    if style in ("roman", "both"):
+        u_t = copy.deepcopy(u_jp_thin)
+        u_r = copy.deepcopy(u_jp_reg)
+        u_b = copy.deepcopy(u_jp_bold)
+
+        for u in (u_t, u_r, u_b):
+            _apply_ufo_mono_cjk_transform(u, italic=False)
+
+        mo_t = ufoLib2.Font.open(mono_masters_dir / "IBM Plex Mono Var-Thin.ufo")
+        mo_r = ufoLib2.Font.open(mono_masters_dir / "IBM Plex Mono Var-Regular.ufo")
+        mo_b = ufoLib2.Font.open(mono_masters_dir / "IBM Plex Mono Var-Bold.ufo")
+
+        _merge_mono_variable_latin(u_t, mo_t, italic=False)
+        _merge_mono_variable_latin(u_r, mo_r, italic=False)
+        _merge_mono_variable_latin(u_b, mo_b, italic=False)
+
+        u_gp = _make_grade_master(u_r, u_b, 0.15, "Regular Grade+", family_name=MONO_FAMILY)
+        u_gn = _make_grade_master(u_r, u_t, 0.15, "Regular Grade-", family_name=MONO_FAMILY)
+        ds_rom = _make_variable_designspace(u_t, u_r, u_b, u_gp, u_gn, italic=False, family_name=MONO_FAMILY)
+        built.append(_compile_and_export_vf(ds_rom, False, [u_t, u_r, u_b, u_gp, u_gn], family_name=MONO_FAMILY))
+
+    if style in ("italic", "both"):
+        u_t_it = copy.deepcopy(u_jp_thin)
+        u_r_it = copy.deepcopy(u_jp_reg)
+        u_b_it = copy.deepcopy(u_jp_bold)
+
+        for u in (u_t_it, u_r_it, u_b_it):
+            _apply_ufo_mono_cjk_transform(u, italic=True)
+
+        mo_t_it = ufoLib2.Font.open(mono_masters_dir / "IBM Plex Mono Var-Thin Italic.ufo")
+        mo_r_it = ufoLib2.Font.open(mono_masters_dir / "IBM Plex Mono Var-Italic.ufo")
+        mo_b_it = ufoLib2.Font.open(mono_masters_dir / "IBM Plex Mono Var-Bold Italic.ufo")
+
+        _merge_mono_variable_latin(u_t_it, mo_t_it, italic=True)
+        _merge_mono_variable_latin(u_r_it, mo_r_it, italic=True)
+        _merge_mono_variable_latin(u_b_it, mo_b_it, italic=True)
+
+        u_gp_it = _make_grade_master(u_r_it, u_b_it, 0.15, "Regular Italic Grade+", family_name=MONO_FAMILY)
+        u_gn_it = _make_grade_master(u_r_it, u_t_it, 0.15, "Regular Italic Grade-", family_name=MONO_FAMILY)
+        ds_it = _make_variable_designspace(u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it, italic=True, family_name=MONO_FAMILY)
+        built.append(_compile_and_export_vf(ds_it, True, [u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it], family_name=MONO_FAMILY))
+
+    return built
+
+
+def build_variable_fonts(family: str = "all", style: str = "both") -> list[Path]:
+    built: list[Path] = []
+    if family in ("sans", "sans-variable", "all"):
+        built.extend(build_sans_variable_fonts(style=style))
+    if family in ("mono", "mono-variable", "all"):
+        built.extend(build_mono_variable_fonts(style=style))
     return built
 
 
@@ -1337,12 +1567,12 @@ def build_variable_fonts(style: str = "both") -> list[Path]:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build Holon Sans (Static & Variable) and Holon Mono.")
+    parser = argparse.ArgumentParser(description="Build Holon Sans (Static & Variable) and Holon Mono (Static & Variable).")
     parser.add_argument(
         "--family",
-        choices=["sans", "mono", "variable", "all"],
+        choices=["sans", "mono", "sans-variable", "mono-variable", "variable", "all"],
         default="sans",
-        help="Font family to build (default: sans; use 'all' for full suite)",
+        help="Font family to build (default: sans; use 'variable' for both VFs, 'all' for full suite)",
     )
     parser.add_argument(
         "--weight",
@@ -1364,7 +1594,7 @@ def main() -> None:
         "--var-style",
         choices=["roman", "italic", "both"],
         default="both",
-        help="Variable font style to build when --family is variable or all (default: both)",
+        help="Variable font style to build when --family is variable, mono-variable, sans-variable or all (default: both)",
     )
     args = parser.parse_args()
 
@@ -1386,8 +1616,9 @@ def main() -> None:
             else:
                 build_mono_style(w, italic=args.italic)
 
-    if args.family in ("variable", "all"):
-        build_variable_fonts(style=args.var_style)
+    if args.family in ("sans-variable", "mono-variable", "variable", "all"):
+        target_vf_family = "sans" if args.family == "sans-variable" else ("mono" if args.family == "mono-variable" else "all")
+        build_variable_fonts(family=target_vf_family, style=args.var_style)
 
 
 if __name__ == "__main__":

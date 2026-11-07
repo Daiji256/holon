@@ -24,6 +24,11 @@
   - **エディタ・ターミナル最適化メトリクス**: `OS/2`・`hhea` メトリクスを `950 / -225` に統一し、`BASE` テーブルおよびプロポーショナルカーニング・合字を排除することで VS Code や各種ターミナルでの上下クリッピングや桁ズレを防止しています。
   - **和文イタリック（9.0° オブリーク）**: IBM Plex Mono Italic に合わせた 9.0° 傾斜の和文グリフを収録。
 
+- **Holon Mono Variable（2ファイル分離バリアブルフォント）**:
+  - 直立（`HolonMono-Variable`）・イタリック（`HolonMono-Italic-Variable`）2ファイル構成（STAT テーブルによる相互リンク済み）。
+  - **Weight 軸（`wght`: `100`〜`700`）**: 無段階のウェイト調整に対応しつつ、半角 550 UPM / 全角 1100 UPM のセル幅を 1 ピクセルも動かしません。
+  - **Grade 軸（`GRAD`: `-100`〜`+100`）**: 文字の送り幅（列揃え）を完全に固定したまま線の太さ（黒み）のみを光学補正。ダークモード時の白文字の光の膨張（ハレーション）抑制や、モバイルアプリでの微妙な太さ調整に最適です。
+
 ## ファミリー構成
 
 | ファミリー | 種別 | ウェイト / スタイル | ファイル名 |
@@ -31,6 +36,7 @@
 | **Holon Sans** | Static (`TTF` / `WOFF2`) | `Thin` (100), `ExtraLight` (200), `Light` (300), `Regular` (400), `Text` (450), `Medium` (500), `SemiBold` (600), `Bold` (700) × Upright / Italic | `HolonSans-<Style>.ttf`<br>`HolonSans-<Style>.woff2` |
 | **Holon Sans Variable** | Variable (`OTF` / `WOFF2`) | `wght` `100..700`, `GRAD` `-100..100` × Upright / Italic | `HolonSans-Variable.{otf,woff2}`<br>`HolonSans-Italic-Variable.{otf,woff2}` |
 | **Holon Mono** | Static (`TTF` / `WOFF2`) | `Thin` (100) 〜 `Bold` (700) × Upright / Italic | `HolonMono-<Style>.ttf`<br>`HolonMono-<Style>.woff2` |
+| **Holon Mono Variable** | Variable (`OTF` / `WOFF2`) | `wght` `100..700`, `GRAD` `-100..100` × Upright / Italic | `HolonMono-Variable.{otf,woff2}`<br>`HolonMono-Italic-Variable.{otf,woff2}` |
 
 ## 利用方法
 
@@ -72,6 +78,37 @@ body {
 }
 ```
 
+### CSS の設定例（Holon Mono バリアブルフォント）
+
+```css
+@font-face {
+  font-family: "Holon Mono";
+  src: url("fonts/HolonMono-Variable.woff2") format("woff2-variations");
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Holon Mono";
+  src: url("fonts/HolonMono-Italic-Variable.woff2") format("woff2-variations");
+  font-weight: 100 700;
+  font-style: italic;
+  font-display: swap;
+}
+
+pre, code {
+  font-family: "Holon Mono", monospace;
+}
+
+/* ダークモード時の光学補正（文字揃え・桁幅を保ったまま黒みを少し抑える） */
+@media (prefers-color-scheme: dark) {
+  pre, code {
+    font-variation-settings: "GRAD" -50;
+  }
+}
+```
+
 ### エディタ・ターミナルの設定例（Holon Mono）
 
 ```json
@@ -93,9 +130,11 @@ uv run build.py
 uv run build.py --family sans --weight Regular
 uv run build.py --family sans --weight Regular --italic
 uv run build.py --family mono --all-styles
+uv run build.py --family mono-variable
+uv run build.py --family sans-variable
 uv run build.py --family variable
 
-# 全ファミリー・全スタイルの完全ビルド
+# 全ファミリー・全スタイルの完全ビルド（Static & Variable）
 uv run build.py --family all --all-styles
 
 # 自動検証テストスイート＆標本画像（specimens/*.png）の生成

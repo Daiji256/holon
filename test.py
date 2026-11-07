@@ -147,6 +147,8 @@ def test_1_files_and_woff2_parity() -> None:
         ("HolonMono-Italic.ttf", "HolonMono-Italic.woff2"),
         ("HolonSans-Variable.otf", "HolonSans-Variable.woff2"),
         ("HolonSans-Italic-Variable.otf", "HolonSans-Italic-Variable.woff2"),
+        ("HolonMono-Variable.otf", "HolonMono-Variable.woff2"),
+        ("HolonMono-Italic-Variable.otf", "HolonMono-Italic-Variable.woff2"),
     ]
     for desk_name, woff2_name in core_fonts:
         d_path = FONTS_DIR / desk_name
@@ -408,9 +410,16 @@ def test_5_vertical_and_chws_spacing() -> None:
 
 def test_6_variable_axes_and_rendering() -> None:
     print("[Test 6] Verifying Variable Font axes (wght 100..700 & GRAD -100..+100 width lock)...")
-    for vname in ("HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf"):
+    vf_fonts = (
+        "HolonSans-Variable.otf",
+        "HolonSans-Italic-Variable.otf",
+        "HolonMono-Variable.otf",
+        "HolonMono-Italic-Variable.otf",
+    )
+    for vname in vf_fonts:
         vpath = FONTS_DIR / vname
-        sample = "Holon Sans 美しい文字の調和 0123456789"
+        is_mono = "Mono" in vname
+        sample = "Holon Mono 0123456789 美しい調和" if is_mono else "Holon Sans 美しい文字の調和 0123456789"
 
         # 1. GRAD axis must NOT change advance width by even 1 unit
         _, pos_g_neg = shape_text(vpath, sample, variations={"wght": 400, "GRAD": -100})
@@ -420,6 +429,11 @@ def test_6_variable_axes_and_rendering() -> None:
         adv_zero = [p.x_advance for p in pos_g_zero]
         adv_pos = [p.x_advance for p in pos_g_pos]
         assert adv_neg == adv_zero == adv_pos, f"{vname} GRAD axis altered horizontal advance widths!"
+
+        # For Mono Variable: verify all advance widths are strictly 550 or 1100
+        if is_mono:
+            for p in pos_g_zero:
+                assert p.x_advance in (550, 1100), f"{vname} has unexpected advance width: {p.x_advance}"
 
         # 2. Verify ink density increases monotonically with GRAD (-100 < 0 < +100) and wght (100 < 400 < 700)
         def count_ink(variations: dict[str, float]) -> int:
@@ -441,7 +455,7 @@ def test_6_variable_axes_and_rendering() -> None:
             f"{vname} wght ink density not monotonic: {ink_w_100}, {ink_w_400}, {ink_w_700}"
         )
 
-    print("  PASS: Variable font wght and GRAD axes verified.")
+    print("  PASS: Variable font wght and GRAD axes verified for both Sans and Mono.")
 
 
 # ---------------------------------------------------------------------------
@@ -685,6 +699,52 @@ def generate_mono_specimens() -> list[Path]:
     p = SPECIMENS_DIR / "specimen_mono_weights.png"
     img.save(p)
     outputs.append(p)
+
+    # 4. Holon Mono Variable & Grade Axis Specimen
+    var_path = FONTS_DIR / "HolonMono-Variable.otf"
+    var_it_path = FONTS_DIR / "HolonMono-Italic-Variable.otf"
+    if var_path.exists() and var_it_path.exists():
+        img = Image.new("RGBA", (1440, 960), (18, 22, 28, 255))
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([(0, 0), (1440, 80)], fill=(28, 33, 40))
+        draw_text_hb(img, reg_path, "Holon Mono Variable — Weight (100..700) & Grade (-100..+100) Axis Specimen", 22, (50, 48), color=(240, 246, 252))
+        draw_text_hb(img, reg_path, "2-File Architecture (Roman / Italic)", 15, (1100, 48), color=(139, 148, 158))
+
+        # Panel A: Weight variation (Roman)
+        draw.rectangle([(50, 110), (1390, 470)], fill=(24, 29, 36), outline=(48, 54, 61))
+        draw_text_hb(img, reg_path, "1. Weight 軸（wght: 100 〜 700）無段階連続変化 — 厳密 2:1 幅維持", 16, (75, 135), color=(88, 166, 255))
+        curr_y = 175
+        for wval, label in [(100, "Thin 100"), (250, "Wght 250"), (400, "Regular 400"), (550, "Wght 550"), (700, "Bold 700")]:
+            draw_text_hb(img, reg_path, f"{label:<12}", 14, (75, curr_y + 12), color=(139, 148, 158))
+            sample = "fn calc(x: i32) -> i32 { x * 2 } // 厳密な 550/1100 UPM 列位置完全一致"
+            draw_text_hb(img, var_path, sample, 18, (230, curr_y + 12), variations={"wght": wval, "GRAD": 0}, color=(240, 246, 252))
+            curr_y += 48
+
+        # Panel B: Grade Axis (GRAD: -100 to +100) — Dark mode optical compensation
+        draw.rectangle([(50, 500), (1390, 910)], fill=(24, 29, 36), outline=(48, 54, 61))
+        draw_text_hb(img, reg_path, "2. Grade 軸（GRAD: -100 〜 +100）— 送り幅を 1px も変えない線の太さ（黒み）光学補正", 16, (75, 525), color=(126, 231, 135))
+
+        # Light box
+        draw.rectangle([(75, 560), (700, 880)], fill=(255, 255, 255, 255))
+        draw_text_hb(img, reg_path, "ライトモード表示（GRAD: 0 〜 +100）", 14, (95, 585), color=(15, 23, 42))
+        draw_text_hb(img, var_path, "GRAD: 0 (Normal)", 13, (95, 630), color=(100, 116, 139))
+        draw_text_hb(img, var_path, 'let msg = "Hello, 世界！";', 18, (95, 665), variations={"wght": 400, "GRAD": 0}, color=(15, 23, 42))
+        draw_text_hb(img, var_path, "GRAD: +100 (Fine Bold without width change)", 13, (95, 740), color=(100, 116, 139))
+        draw_text_hb(img, var_path, 'let msg = "Hello, 世界！";', 18, (95, 775), variations={"wght": 400, "GRAD": 100}, color=(15, 23, 42))
+        draw_text_hb(img, reg_path, "※ GRAD を上げても列幅・文字位置は完全に不変", 12, (95, 840), color=(71, 85, 105))
+
+        # Dark box
+        draw.rectangle([(740, 560), (1365, 880)], fill=(13, 17, 23, 255))
+        draw_text_hb(img, reg_path, "ダークモード光学補正（GRAD: -100）", 14, (760, 585), color=(240, 246, 252))
+        draw_text_hb(img, var_path, "GRAD: 0 (Standard Dark: 白文字が膨張して太く見えやすい)", 13, (760, 630), color=(139, 148, 158))
+        draw_text_hb(img, var_path, 'let msg = "Hello, 世界！";', 18, (760, 665), variations={"wght": 400, "GRAD": 0}, color=(240, 246, 252))
+        draw_text_hb(img, var_path, "GRAD: -100 (Compensated: ハレーションを抑えてすっきり可読)", 13, (760, 740), color=(88, 166, 255))
+        draw_text_hb(img, var_path, 'let msg = "Hello, 世界！";', 18, (760, 775), variations={"wght": 400, "GRAD": -100}, color=(240, 246, 252))
+        draw_text_hb(img, reg_path, "※ 背景色に応じて黒みを微調整しても桁ズレが 1px も発生しません", 12, (760, 840), color=(139, 148, 158))
+
+        p = SPECIMENS_DIR / "specimen_mono_variable.png"
+        img.save(p)
+        outputs.append(p)
 
     return outputs
 
