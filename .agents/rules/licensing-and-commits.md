@@ -15,5 +15,5 @@ trigger: always_on
    - `tmp/` is ignored by Git and can be freely used for scratch/temporary processing.
 
 3. **Execution with `uv`**:
-   - Use Python scripts formatted with PEP 723 inline script metadata runnable via `uv run`.
-   - Refer to `/Users/daiji/src/makumi-fonts` and `/Users/daiji/src/yaku-kumi-fonts` for implementation patterns.
+   - Use Python scripts formatted with PEP 723 inline script metadata runnable via `uv run` (`uv run build.py`, `uv run test.py`).
+   - Upstream font assets must be pinned by commit hash or release tag and verified with SHA-256 checksums.
