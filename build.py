@@ -48,6 +48,7 @@ from fontTools.pens.transformPen import TransformPen, TransformPointPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.subset import Options as SubsetOptions, Subsetter
 from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
 from glyphsLib import GSFont, to_designspace
 import ufo2ft
 import ufoLib2
@@ -323,6 +324,25 @@ def _transform_tt_glyph(glyph_set, gname: str, matrix: tuple[float, ...], glyf_t
     g = tt_pen.glyph()
     g.recalcBounds(glyf_table)
     return g
+
+
+def _snap_tt_box_drawing_glyph(glyph, glyf_table) -> None:
+    """Snap Box-drawing and Block Elements vertical boundaries to 950 (Ascent) and -225 (Descent),
+    ensuring continuous vertical and horizontal lines without 1px gaps in terminals and editors."""
+    if glyph.numberOfContours <= 0:
+        return
+    coords, end_pts, flags = glyph.getCoordinates(glyf_table)
+    new_coords = GlyphCoordinates()
+    for x, y in coords:
+        if y >= 800:
+            ny = 950
+        elif y <= -180:
+            ny = -225
+        else:
+            ny = y
+        new_coords.append((x, ny))
+    glyph.coordinates = new_coords
+    glyph.recalcBounds(glyf_table)
 
 
 def add_vertical_semicolon(font_jp: TTFont) -> None:
@@ -811,6 +831,8 @@ def build_mono_style(weight: str, italic: bool = False) -> Path:
         dest_gname = gname_mono
         if dest_gname not in replaced_glyphs:
             scaled_glyph = _transform_tt_glyph(glyph_set_mono, gname_mono, mono_matrix, glyf_jp)
+            if 0x2500 <= ucode <= 0x259F or "bxd" in gname_mono or "block" in gname_mono:
+                _snap_tt_box_drawing_glyph(scaled_glyph, glyf_jp)
             orig_w, orig_lsb = font_mono["hmtx"][gname_mono]
             new_w = 0 if orig_w == 0 else HALF_WIDTH
             new_lsb = int(round(orig_lsb * SCALE_MONO_X))
@@ -1149,7 +1171,7 @@ def _merge_mono_variable_latin(
                     old_g = ufo_jp[old_gname]
                     old_g.unicodes = [x for x in (old_g.unicodes or []) if x != u]
 
-        is_box = bool(unicodes & set(range(0x2500, 0x2580))) or "bxd" in g_mono.name or "block" in g_mono.name
+        is_box = bool(unicodes & set(range(0x2500, 0x25A0))) or "bxd" in g_mono.name or "block" in g_mono.name
 
         ng = copy.deepcopy(g_mono)
         if ng.width > 0:
@@ -1160,10 +1182,10 @@ def _merge_mono_variable_latin(
                 px = p.x * SCALE_MONO_X
                 py = p.y * SCALE_MONO_Y
                 if is_box:
-                    # Snap box drawing vertical boundaries to strict 950 and -225
-                    if p.y >= 900:
+                    # Snap box drawing and block boundaries to strict 950 and -225
+                    if p.y >= 800:
                         py = 950.0
-                    elif p.y <= -200:
+                    elif p.y <= -180:
                         py = -225.0
                 p.x = px
                 p.y = py
@@ -1171,30 +1193,113 @@ def _merge_mono_variable_latin(
         ufo_jp[ng.name] = ng
 
 
-def _make_slanted_master(ufo_src: ufoLib2.Font, name: str) -> ufoLib2.Font:
-    """Create a slanted UFO master by applying 11.0° shear (CJK around cy=400, Latin around cy=0)."""
-    s = math.tan(math.radians(-SANS_ITALIC_ANGLE))
-    new_f = ufoLib2.Font()
-    new_f.info = copy.deepcopy(ufo_src.info)
-    new_f.info.familyName = SANS_FAMILY
-    new_f.info.styleName = name
-    new_f.features.text = ufo_src.features.text
-    new_f.groups = copy.deepcopy(ufo_src.groups)
-    new_f.lib = copy.deepcopy(ufo_src.lib)
+def _apply_ufo_sans_cjk_italic_transform(ufo: ufoLib2.Font) -> None:
+    """Transform UFO CJK glyphs for Sans Italic:
+    - Japanese / CJK glyphs: scaled 0.97x, centered around (width/2, 400), with 11.0° shear.
+    - Fullwidth space (U+3000): width 1000 UPM.
+    - Halfwidth spaces (U+2000, U+2002): width 500 UPM.
+    """
+    slant = math.tan(math.radians(-SANS_ITALIC_ANGLE))
+    dy_cjk = JP_CENTER_Y * (1.0 - SCALE_JP)
 
-    for gname in ufo_src.keys():
-        src_g = ufo_src[gname]
-        ng = new_f.newGlyph(gname)
-        ng.width = src_g.width
-        ng.height = src_g.height
-        ng.verticalOrigin = src_g.verticalOrigin
-        ng.unicodes = list(src_g.unicodes or [])
+    for g in ufo:
+        unicodes = set(g.unicodes or [])
+        if g.unicode is not None:
+            unicodes.add(g.unicode)
 
-        cjk = is_cjk_glyph(gname, src_g.unicode, box_is_latin=False)
-        dy_pivot = -JP_CENTER_Y * s if cjk else 0.0
-        src_g.drawPoints(TransformPointPen(ng.getPointPen(), (1.0, 0.0, s, 1.0, dy_pivot, 0.0)))
+        if unicodes & {0x3000, 0x2001, 0x2003}:
+            g.width = 1000
+            continue
+        if unicodes & {0x2000, 0x2002}:
+            g.width = 500
+            continue
 
-    return new_f
+        if is_cjk_glyph(g.name, g.unicode, box_is_latin=False):
+            cx = g.width / 2.0 if g.width > 0 else JP_CENTER_X
+            dx = cx * (1.0 - SCALE_JP)
+            for c in g.contours:
+                for p in c.points:
+                    px = p.x * SCALE_JP + dx
+                    py = p.y * SCALE_JP + dy_cjk
+                    px += (py - JP_CENTER_Y) * slant
+                    p.x = px
+                    p.y = py
+
+
+def _merge_sans_variable_italic_latin(
+    ufo_thin: ufoLib2.Font,
+    ufo_reg: ufoLib2.Font,
+    ufo_bold: ufoLib2.Font,
+    sans_masters_dir: Path,
+) -> int:
+    """Merge native IBM Plex Sans Italic UFO glyphs (Thin, Reg, Bold) into Japanese UFO masters at 1.02x scale."""
+    sans_t = ufoLib2.Font.open(sans_masters_dir / "IBM Plex Sans-Thin Italic.ufo")
+    sans_r = ufoLib2.Font.open(sans_masters_dir / "IBM Plex Sans-Italic.ufo")
+    sans_b = ufoLib2.Font.open(sans_masters_dir / "IBM Plex Sans-Bold Italic.ufo")
+
+    ufo_thin.kerning.clear()
+    ufo_reg.kerning.clear()
+    ufo_bold.kerning.clear()
+
+    # Build unicode to glyph name mapping in Japanese UFO to prevent duplicate unicode mappings
+    u_to_jp_gname = {}
+    for g in ufo_reg:
+        for u in (g.unicodes or []):
+            u_to_jp_gname[u] = g.name
+
+    added = 0
+    for g_r in sans_r:
+        u = g_r.unicode
+        unicodes = set(g_r.unicodes or [])
+        if u is not None:
+            unicodes.add(u)
+
+        if 0x3000 in unicodes or (unicodes & set(JP_FULLWIDTH_SYMBOLS)):
+            continue
+        if u is not None and is_cjk_glyph(g_r.name, u, box_is_latin=False):
+            continue
+
+        gname = g_r.name
+
+        # Prevent duplicate unicode mapping: remove unicode from existing JP glyph if different
+        for uc in unicodes:
+            if uc in u_to_jp_gname and u_to_jp_gname[uc] != gname:
+                old_gname = u_to_jp_gname[uc]
+                for dst_u in (ufo_thin, ufo_reg, ufo_bold):
+                    if old_gname in dst_u:
+                        old_g = dst_u[old_gname]
+                        old_g.unicodes = [x for x in (old_g.unicodes or []) if x != uc]
+
+        decomposed: list[ufoLib2.objects.Glyph] = []
+        sigs: list[list[tuple[int, list[str | None]]]] = []
+        for s_ufo in (sans_t, sans_r, sans_b):
+            src_g = s_ufo[gname] if gname in s_ufo else g_r
+            new_w = int(round(src_g.width * SCALE_SANS)) if not gname.endswith(".rotat") else src_g.width
+            dg = ufoLib2.objects.Glyph(name=gname, width=new_w, height=1000, unicodes=list(unicodes))
+            dg.verticalOrigin = 880
+            rpen = DecomposingRecordingPointPen(s_ufo)
+            src_g.drawPoints(rpen)
+            rpen.replay(TransformPointPen(dg.getPointPen(), (SCALE_SANS, 0.0, 0.0, SCALE_SANS, 0.0, 0.0)))
+            decomposed.append(dg)
+            sigs.append([(len(c.points), [p.segmentType for p in c.points]) for c in dg.contours])
+
+        if sigs[0] == sigs[1] == sigs[2]:
+            ufo_thin[gname], ufo_reg[gname], ufo_bold[gname] = decomposed
+        elif sigs[1] == sigs[2]:
+            ufo_thin[gname] = decomposed[1].copy()
+            ufo_reg[gname] = decomposed[1]
+            ufo_bold[gname] = decomposed[2]
+        else:
+            ufo_thin[gname] = decomposed[1].copy()
+            ufo_reg[gname] = decomposed[1]
+            ufo_bold[gname] = decomposed[1].copy()
+
+        for dst_ufo in (ufo_thin, ufo_reg, ufo_bold):
+            if "public.glyphOrder" in dst_ufo.lib and gname not in dst_ufo.lib["public.glyphOrder"]:
+                dst_ufo.lib["public.glyphOrder"].append(gname)
+        added += 1
+
+    return added
 
 
 def _make_grade_master(
@@ -1429,46 +1534,67 @@ def build_sans_variable_fonts(style: str = "both") -> list[Path]:
     print(f"Loaded Glyphs source in {time.time() - t0:.1f}s.")
 
     ds = to_designspace(gs_font)
-    ufo_thin, ufo_reg, ufo_bold = ds.sources[0].font, ds.sources[1].font, ds.sources[2].font
-    ufos = [ufo_thin, ufo_reg, ufo_bold]
+    u_jp_thin, u_jp_reg, u_jp_bold = ds.sources[0].font, ds.sources[1].font, ds.sources[2].font
 
-    for u in ufos:
+    for u in (u_jp_thin, u_jp_reg, u_jp_bold):
         u.info.familyName = SANS_FAMILY
         _add_vertical_semicolon_to_ufo(u)
 
     for gname in INITIAL_SYNC_GLYPHS:
-        if gname in ufo_reg:
-            ufo_thin[gname] = ufo_reg[gname].copy()
-            ufo_bold[gname] = ufo_reg[gname].copy()
-
-    added_latin = _merge_missing_sans_ufo_glyphs(ufo_thin, ufo_reg, ufo_bold, sans_masters_dir)
-    print(f"Merged {added_latin} additional Latin/symbol glyphs from IBM Plex Sans UFO masters.")
-
-    for u in ufos:
-        _apply_ufo_dual_scale(u)
-
-    # Map CJK Compatibility Ideographs (U+F900..U+FAFF)
-    code_to_gname = {u: g.name for g in ufo_reg for u in (g.unicodes or [])}
-    for code in range(0xF900, 0xFB00):
-        if code not in code_to_gname:
-            d = unicodedata.normalize("NFKD", chr(code))
-            if len(d) == 1 and ord(d) in code_to_gname:
-                cg = code_to_gname[ord(d)]
-                for ufo in ufos:
-                    if cg in ufo:
-                        ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
+        if gname in u_jp_reg:
+            u_jp_thin[gname] = u_jp_reg[gname].copy()
+            u_jp_bold[gname] = u_jp_reg[gname].copy()
 
     built: list[Path] = []
     if style in ("roman", "both"):
+        ufo_thin = copy.deepcopy(u_jp_thin)
+        ufo_reg = copy.deepcopy(u_jp_reg)
+        ufo_bold = copy.deepcopy(u_jp_bold)
+        ufos = [ufo_thin, ufo_reg, ufo_bold]
+
+        added_latin = _merge_missing_sans_ufo_glyphs(ufo_thin, ufo_reg, ufo_bold, sans_masters_dir)
+        print(f"Merged {added_latin} additional Latin/symbol glyphs from IBM Plex Sans UFO masters (Roman).")
+
+        for u in ufos:
+            _apply_ufo_dual_scale(u)
+
+        code_to_gname = {u: g.name for g in ufo_reg for u in (g.unicodes or [])}
+        for code in range(0xF900, 0xFB00):
+            if code not in code_to_gname:
+                d = unicodedata.normalize("NFKD", chr(code))
+                if len(d) == 1 and ord(d) in code_to_gname:
+                    cg = code_to_gname[ord(d)]
+                    for ufo in ufos:
+                        if cg in ufo:
+                            ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
+
         ufo_gp = _make_grade_master(ufo_reg, ufo_bold, 0.15, "Regular Grade+", family_name=SANS_FAMILY)
         ufo_gn = _make_grade_master(ufo_reg, ufo_thin, 0.15, "Regular Grade-", family_name=SANS_FAMILY)
         ds_rom = _make_variable_designspace(ufo_thin, ufo_reg, ufo_bold, ufo_gp, ufo_gn, italic=False, family_name=SANS_FAMILY)
         built.append(_compile_and_export_vf(ds_rom, False, [ufo_thin, ufo_reg, ufo_bold, ufo_gp, ufo_gn], family_name=SANS_FAMILY))
 
     if style in ("italic", "both"):
-        u_t_it = _make_slanted_master(ufo_thin, "Thin Italic")
-        u_r_it = _make_slanted_master(ufo_reg, "Regular Italic")
-        u_b_it = _make_slanted_master(ufo_bold, "Bold Italic")
+        u_t_it = copy.deepcopy(u_jp_thin)
+        u_r_it = copy.deepcopy(u_jp_reg)
+        u_b_it = copy.deepcopy(u_jp_bold)
+        ufos_it = [u_t_it, u_r_it, u_b_it]
+
+        for u in ufos_it:
+            _apply_ufo_sans_cjk_italic_transform(u)
+
+        added_it_latin = _merge_sans_variable_italic_latin(u_t_it, u_r_it, u_b_it, sans_masters_dir)
+        print(f"Merged {added_it_latin} native IBM Plex Sans Italic UFO glyphs (1.02x scale).")
+
+        code_to_gname = {u: g.name for g in u_r_it for u in (g.unicodes or [])}
+        for code in range(0xF900, 0xFB00):
+            if code not in code_to_gname:
+                d = unicodedata.normalize("NFKD", chr(code))
+                if len(d) == 1 and ord(d) in code_to_gname:
+                    cg = code_to_gname[ord(d)]
+                    for ufo in ufos_it:
+                        if cg in ufo:
+                            ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
+
         u_gp_it = _make_grade_master(u_r_it, u_b_it, 0.15, "Regular Italic Grade+", family_name=SANS_FAMILY)
         u_gn_it = _make_grade_master(u_r_it, u_t_it, 0.15, "Regular Italic Grade-", family_name=SANS_FAMILY)
         ds_it = _make_variable_designspace(u_t_it, u_r_it, u_b_it, u_gp_it, u_gn_it, italic=True, family_name=SANS_FAMILY)
