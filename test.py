@@ -105,8 +105,6 @@ def fonts_dir(pytestconfig: pytest.Config) -> Path:
 
 def test_font_family_completeness(fonts_dir: Path) -> None:
     missing = [f for f in ALL_EXPECTED if not (fonts_dir / f).exists()]
-    if missing and fonts_dir.resolve() == Path("fonts").resolve():
-        pytest.xfail(f"fonts/ incomplete during dev ({len(missing)} files missing)")
     assert not missing, f"Missing {len(missing)} expected fonts in {fonts_dir}: {missing[:4]}"
 
 
@@ -155,7 +153,6 @@ def test_opentype_metadata_and_ofl(fonts_dir: Path, d_name: str) -> None:
 
 # --- Intended Behavior: RIBBI, NameID 0/9, Meta/Gasp ---
 
-@pytest.mark.xfail(strict=True, reason="RIBBI naming & nameID 20 removal pending build.py fix")
 @pytest.mark.parametrize("d_name", [f for f in DESKTOP_FONTS if "Variable" not in f])
 def test_name_ribbi_and_no_nameid20(fonts_dir: Path, d_name: str) -> None:
     p = fonts_dir / d_name
@@ -177,7 +174,6 @@ def test_name_ribbi_and_no_nameid20(fonts_dir: Path, d_name: str) -> None:
         assert names.get(16) == base_fam and names.get(17) == f"{w}{it}"
 
 
-@pytest.mark.xfail(strict=True, reason="nameID 0 upstream verbatim & nameID 9 designer names pending build.py fix")
 @pytest.mark.parametrize("d_name", ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf"])
 def test_name_records_upstream_attribution(fonts_dir: Path, d_name: str) -> None:
     p = fonts_dir / d_name
@@ -193,7 +189,6 @@ def test_name_records_upstream_attribution(fonts_dir: Path, d_name: str) -> None
     assert "Wujin Sim" in id9
 
 
-@pytest.mark.xfail(strict=True, reason="meta (dlng=Jpan) and gasp tables pending build.py fix")
 @pytest.mark.parametrize("d_name", DESKTOP_FONTS)
 def test_meta_and_gasp_tables(fonts_dir: Path, d_name: str) -> None:
     p = fonts_dir / d_name
@@ -235,7 +230,6 @@ def test_ofl_license_text(fonts_dir: Path) -> None:
 
 # --- Glyph Bounds & Clipping ---
 
-@pytest.mark.xfail(strict=True, reason="Mono win metrics clipping pending build.py fix")
 @pytest.mark.parametrize("d_name", [f for f in DESKTOP_FONTS if "HolonMono" in f and f.endswith(".ttf")])
 def test_mono_glyph_bounds_within_win_clipping(fonts_dir: Path, d_name: str) -> None:
     p = fonts_dir / d_name
@@ -271,7 +265,6 @@ def test_sans_common_repertoire_within_win_clipping(fonts_dir: Path, d_name: str
 
 # --- Cmap Integrity, Coverage & Authentic Italic ---
 
-@pytest.mark.xfail(strict=True, reason="PUA empty glyphs U+F860.. present in cmap pending build.py removal")
 @pytest.mark.parametrize("font_name", ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf"])
 def test_cmap_non_space_chars_have_outlines(fonts_dir: Path, font_name: str) -> None:
     p = fonts_dir / font_name
@@ -332,7 +325,6 @@ def test_authentic_italic_structure(fonts_dir: Path) -> None:
 
 # --- Mono Duospace Grid, EAW & Box Drawing ---
 
-@pytest.mark.xfail(strict=True, reason="Mono post.isFixedPitch == 0 & GSUB missing ccmp/locl pending build.py fix")
 @pytest.mark.parametrize("mname", [f for f in DESKTOP_FONTS if "HolonMono" in f and f.endswith(".ttf")])
 def test_mono_duospace_advances_and_features(fonts_dir: Path, mname: str) -> None:
     p = fonts_dir / mname
@@ -351,7 +343,6 @@ def test_mono_duospace_advances_and_features(fonts_dir: Path, mname: str) -> Non
     assert {"ccmp", "locl"}.issubset(gsub)
 
 
-@pytest.mark.xfail(strict=True, reason="Mono U+274C EAW=W advance 550 != 1100 pending build.py fix")
 @pytest.mark.parametrize("mname", ["HolonMono-Regular.ttf", "HolonMono-Variable.otf"])
 def test_mono_east_asian_width(fonts_dir: Path, mname: str) -> None:
     p = fonts_dir / mname
@@ -372,7 +363,6 @@ def test_mono_east_asian_width(fonts_dir: Path, mname: str) -> None:
     assert not viol, f"{mname} EAW=W/F violations: {viol[:5]}"
 
 
-@pytest.mark.xfail(strict=True, reason="Mono block elements U+2581 zero height pending build.py fix")
 def test_mono_box_and_block_snaps(fonts_dir: Path) -> None:
     p = fonts_dir / "HolonMono-Regular.ttf"
     if not p.exists():
@@ -427,7 +417,6 @@ def test_feature_parity_vs_upstream(fonts_dir: Path) -> None:
 
 # --- Variable Fonts: fvar, STAT, GRAD & Static Parity ---
 
-@pytest.mark.xfail(strict=True, reason="VF fvar named instances have distorted weights pending build.py fix")
 @pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
 def test_variable_axes_and_stat(fonts_dir: Path, vname: str) -> None:
     p = fonts_dir / vname
@@ -440,7 +429,7 @@ def test_variable_axes_and_stat(fonts_dir: Path, vname: str) -> None:
     assert [a.AxisTag for a in vf["STAT"].table.DesignAxisRecord.Axis] == ["wght", "GRAD", "ital"]
     insts = {vf["name"].getDebugName(i.subfamilyNameID): i.coordinates["wght"] for i in vf["fvar"].instances}
     for wn, wv in WEIGHT_VALS.items():
-        matched = [c for name, c in insts.items() if wn in name]
+        matched = [c for name, c in insts.items() if name in (wn, f"{wn} Italic", "Italic" if wn == "Regular" else "")]
         assert matched and abs(matched[0] - float(wv)) < 1.0
 
 
@@ -466,7 +455,6 @@ def test_variable_grad_advance_preservation(fonts_dir: Path, vname: str) -> None
     assert not diffs, f"{vname} GRAD altered advances: {diffs[:4]}"
 
 
-@pytest.mark.xfail(strict=True, reason="Static vs VF advance parity (Sans Latin 1.07x, Mono halfwidth kana) pending build.py fix")
 def test_static_vf_advance_parity(fonts_dir: Path) -> None:
     pairs = [
         ("HolonSans-Regular.ttf", "HolonSans-Variable.otf", 3),

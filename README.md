@@ -45,7 +45,7 @@
 ```css
 @font-face {
   font-family: "Holon Sans";
-  src: url("fonts/HolonSans-Variable.woff2") format("woff2-variations");
+  src: url("fonts/HolonSans-Variable.woff2") format("woff2");
   font-weight: 100 700;
   font-style: normal;
   font-display: swap;
@@ -53,7 +53,7 @@
 
 @font-face {
   font-family: "Holon Sans";
-  src: url("fonts/HolonSans-Italic-Variable.woff2") format("woff2-variations");
+  src: url("fonts/HolonSans-Italic-Variable.woff2") format("woff2");
   font-weight: 100 700;
   font-style: italic;
   font-display: swap;
@@ -83,7 +83,7 @@ body {
 ```css
 @font-face {
   font-family: "Holon Mono";
-  src: url("fonts/HolonMono-Variable.woff2") format("woff2-variations");
+  src: url("fonts/HolonMono-Variable.woff2") format("woff2");
   font-weight: 100 700;
   font-style: normal;
   font-display: swap;
@@ -91,7 +91,7 @@ body {
 
 @font-face {
   font-family: "Holon Mono";
-  src: url("fonts/HolonMono-Italic-Variable.woff2") format("woff2-variations");
+  src: url("fonts/HolonMono-Italic-Variable.woff2") format("woff2");
   font-weight: 100 700;
   font-style: italic;
   font-display: swap;
