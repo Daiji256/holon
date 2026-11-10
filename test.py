@@ -369,7 +369,7 @@ def test_mono_box_and_block_snaps(fonts_dir: Path) -> None:
         pytest.skip("HolonMono-Regular.ttf not built")
     glyf, cmap = get_tt(p)["glyf"], get_tt(p).getBestCmap()
     gh, gv, gb = glyf[cmap[0x2500]], glyf[cmap[0x2502]], glyf[cmap[0x2588]]
-    assert gh.xMin <= 0 and gh.xMax >= 550 and gv.yMin == -225 and gv.yMax == 950
+    assert gh.xMin <= 0 and gh.xMax >= 550 and gv.yMin <= -225 and gv.yMax >= 950
     assert (gb.xMin, gb.xMax, gb.yMin, gb.yMax) == (0, 550, -225, 950)
     assert glyf[cmap[0x2580]].yMax == 950
     heights = [glyf[cmap[cp]].yMax - glyf[cmap[cp]].yMin for cp in range(0x2581, 0x2589)]
@@ -482,6 +482,108 @@ def test_static_vf_advance_parity(fonts_dir: Path) -> None:
         assert not viol, f"{s_name} vs {v_name} advance mismatch ({len(viol)} chars): {viol[:5]}"
 
 
+@pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
+def test_variable_weight_monotonicity_fine_grained(fonts_dir: Path, vname: str) -> None:
+    """Verify that font weights strictly scale monotonically across wght 100..700 for all key glyphs."""
+    p = fonts_dir / vname
+    if not p.exists():
+        pytest.skip(f"{vname} not built")
+    face = freetype.Face(str(p))
+    face.set_char_size(24 * 64)
+    wght_steps = [100, 200, 300, 400, 500, 600, 700]
+
+    # Representative character set including user-reported problematic glyphs (a, w, x, v, y)
+    test_chars = ["a", "w", "x", "v", "y", "f", "g", "0", "8", "あ", "森"]
+
+    for ch in test_chars:
+        inks = []
+        for w in wght_steps:
+            face.set_var_design_coords([w, 0])
+            face.load_char(ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
+            bm = face.glyph.bitmap
+            ink = sum(bm.buffer)
+            inks.append(ink)
+
+        # Verify strict monotonicity: ink strictly increases with weight
+        for i in range(len(inks) - 1):
+            assert inks[i] < inks[i + 1], (
+                f"{vname} '{ch}' weight not monotonic: wght={wght_steps[i]} (ink={inks[i]}) "
+                f"vs wght={wght_steps[i+1]} (ink={inks[i+1]})"
+            )
+        # Verify substantial weight expansion (Bold is at least 1.8x ink of Thin)
+        assert inks[-1] >= 1.8 * inks[0], (
+            f"{vname} '{ch}' insufficient weight expansion: Thin={inks[0]}, Bold={inks[-1]}"
+        )
+
+    # In Mono, verify distinct stroke weights between Light and Heavy box-drawing lines
+    if "Mono" in vname:
+        for light_ch, heavy_ch in [("│", "┃"), ("┼", "╋")]:
+            face.set_var_design_coords([400, 0])
+            face.load_char(light_ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
+            ink_l = sum(face.glyph.bitmap.buffer)
+            face.load_char(heavy_ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
+            ink_h = sum(face.glyph.bitmap.buffer)
+            assert ink_h >= 1.7 * ink_l, f"{vname} {heavy_ch} ({ink_h}) not significantly heavier than {light_ch} ({ink_l})"
+
+
+@pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
+def test_variable_grad_monotonicity_and_width_lock(fonts_dir: Path, vname: str) -> None:
+    """Verify that GRAD preserves advance widths 100% while strictly modulating ink density."""
+    p = fonts_dir / vname
+    if not p.exists():
+        pytest.skip(f"{vname} not built")
+    face = freetype.Face(str(p))
+    face.set_char_size(24 * 64)
+    hb_font = hb.Font(get_hb(p))
+    hb_font.scale = (1000, 1000)
+    tt = get_tt(p)
+    cmap = tt.getBestCmap()
+
+    test_chars = ["a", "w", "x", "v", "y", "A", "0", "あ", "森"]
+    for ch in test_chars:
+        if ord(ch) not in cmap:
+            continue
+        gid = tt.getGlyphID(cmap[ord(ch)])
+        advances = []
+        inks = []
+        for grad in [-100, 0, 100]:
+            hb_font.set_variations({"wght": 400, "GRAD": grad})
+            advances.append(hb_font.get_glyph_h_advance(gid))
+            face.set_var_design_coords([400, grad])
+            face.load_char(ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
+            inks.append(sum(face.glyph.bitmap.buffer))
+
+        assert advances[0] == advances[1] == advances[2], (
+            f"{vname} '{ch}' advance altered by GRAD: {advances}"
+        )
+        assert inks[0] <= inks[1] <= inks[2] and inks[2] > inks[0], (
+            f"{vname} '{ch}' ink not scaling with GRAD: {inks}"
+        )
+
+
+@pytest.mark.parametrize("mname", ["HolonMono-Regular.ttf", "HolonMono-Variable.otf"])
+def test_mono_box_drawing_grid_continuity(fonts_dir: Path, mname: str) -> None:
+    """Verify that vertical lines and crosses connect with 0px gap at line height dy=21."""
+    p = fonts_dir / mname
+    if not p.exists():
+        pytest.skip(f"{mname} not built")
+    img = Image.new("RGBA", (120, 120), (0, 0, 0, 255))
+    var_dict = {"wght": 400, "GRAD": 0} if "Variable" in mname else None
+    draw_text_hb(img, p, "│", 18, (30, 30), var=var_dict, col=(255, 255, 255))
+    draw_text_hb(img, p, "┼", 18, (30, 30 + 21), var=var_dict, col=(255, 255, 255))
+
+    pixels = img.load()
+    stem_x = None
+    for x in range(25, 45):
+        if pixels[x, 30][0] > 100:
+            stem_x = x
+            break
+    assert stem_x is not None, f"Stem column not found in {mname}"
+
+    gap_y = [y for y in range(25, 55) if pixels[stem_x, y][0] < 30]
+    assert not gap_y, f"{mname} vertical gap found in box drawing at y={gap_y}"
+
+
 # --- Declarative Visual Specimen Engine ---
 
 def _render_card(p_out: Path, w: int, h: int, title: str, title_f: Path, els: list[Any], dark: bool = False) -> Path:
@@ -502,6 +604,41 @@ def _render_card(p_out: Path, w: int, h: int, title: str, title_f: Path, els: li
             col = el[7] if len(el) > 7 else ((240, 246, 252) if dark else (15, 23, 42))
             for i, line in enumerate(lines):
                 draw_text_hb(img, f, line, sz, (x, sy + i * dy), col=col)
+    SPECIMENS_DIR.mkdir(parents=True, exist_ok=True)
+    img.save(p_out)
+    return p_out
+
+
+def generate_all_glyphs_contact_sheet(p_font: Path, p_out: Path, title: str) -> Path:
+    """Generate high-density contact sheet containing 100% of all glyphs in the font."""
+    face = freetype.Face(str(p_font))
+    num_glyphs = face.num_glyphs
+    cols = 140
+    rows = (num_glyphs + cols - 1) // cols
+    cell_w, cell_h = 18, 20
+    header_h = 100
+    img_w = cols * cell_w + 80
+    img_h = rows * cell_h + header_h + 40
+
+    img = Image.new("RGBA", (img_w, img_h), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([(40, 20), (img_w - 40, 85)], fill=(248, 250, 252), outline=(226, 232, 240))
+    draw_text_hb(img, p_font, title, 20, (60, 48), col=(15, 23, 42))
+    draw.text((60, 60), f"Total Glyphs: {num_glyphs:,}  |  Grid: {cols} columns x {rows} rows  |  100% Complete Repertoire", fill=(100, 116, 139))
+
+    face.set_char_size(12 * 64)
+    for gid in range(num_glyphs):
+        face.load_glyph(gid, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
+        bm = face.glyph.bitmap
+        r, c = gid // cols, gid % cols
+        cell_x = 40 + c * cell_w
+        cell_y = header_h + r * cell_h
+        if bm.width > 0 and bm.rows > 0:
+            gx = cell_x + (cell_w - bm.width) // 2
+            gy = cell_y + 14 - face.glyph.bitmap_top
+            glyph_img = Image.frombytes("L", (bm.width, bm.rows), bytes(bm.buffer))
+            img.paste(Image.new("RGBA", (bm.width, bm.rows), (30, 41, 59, 255)), (gx, gy), glyph_img)
+
     SPECIMENS_DIR.mkdir(parents=True, exist_ok=True)
     img.save(p_out)
     return p_out
@@ -559,16 +696,35 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
          ("t", sr, "「『連続』」。・：；「・」", 22, (480, 260), (220, 38, 38), {"vert": True, "vchw": False}, None, True)]
     out.append(_render_card(SPECIMENS_DIR / "specimen_vertical.png", 1200, 840, "Holon Sans — 縦書き組版（vert・vrt2・vchw 対応）", sb, v_els))
 
-    var_els = [("rect", [(40, 115), (1160, 415)], (255, 255, 255), (226, 232, 240)), ("t", sb, "1. 直立バリアブルフォント（HolonSans-Variable.otf）: Weight 100 〜 700", 16, (65, 145), (37, 99, 235)),
-               ("rect", [(40, 435), (1160, 735)], (255, 255, 255), (226, 232, 240)), ("t", sb, "2. イタリックバリアブルフォント（HolonSans-Italic-Variable.otf）: 11.0° 傾斜", 16, (65, 465), (147, 51, 234))]
-    for i, (w_val, label) in enumerate([(100, "Thin (100)"), (250, "Light+ (250)"), (400, "Regular (400)"), (550, "Medium+ (550)"), (700, "Bold (700)")]):
-        var_els.extend([("t", sr, label, 12, (65, 206 + i * 42), (100, 116, 139)), ("t", sv, "Holon Sans 美しい文字の調和。The quick brown fox jumps.", 20, (190, 208 + i * 42), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}),
-                        ("t", sr, f"{label} Italic", 12, (65, 526 + i * 42), (100, 116, 139)), ("t", siv, "和文も欧文も流麗に傾斜。Expressive Italic typography with 11° slant.", 20, (190, 528 + i * 42), (15, 23, 42), None, {"wght": w_val, "GRAD": 0})])
-    var_els.extend([("rect", [(40, 755), (1160, 1055)], (255, 255, 255), (226, 232, 240)), ("t", sb, "3. Grade 軸（GRAD: -100 〜 +100）— レイアウト固定の精密太さ調整", 16, (65, 785), (217, 119, 6)),
-                    ("rect", [(65, 835), (585, 1025)], (248, 250, 252), (226, 232, 240)), ("t", sv, "白背景の標準ウェイト (GRAD: 0)。レイアウト完全維持。", 15, (85, 905), (15, 23, 42), None, {"wght": 400, "GRAD": 0}),
-                    ("t", sv, "GRAD: +100 で視認性向上: 細部の線の太さのみが増加。", 14, (85, 955), (15, 23, 42), None, {"wght": 400, "GRAD": 100}),
-                    ("rect", [(615, 835), (1135, 1025)], (15, 23, 42)), ("t", sv, "黒背景で光の膨張を抑え、すっきり可読性を保つ (GRAD: -100)。", 15, (635, 905), (241, 245, 249), None, {"wght": 400, "GRAD": -100})])
-    out.append(_render_card(SPECIMENS_DIR / "specimen_variable_spectrum.png", 1200, 1100, "Holon Sans — 2ファイル分離バリアブルフォント", sb, var_els))
+    # Variable Spectrum Card with full 7-weight scale and a,w,x,v,y glyph interpolation verification
+    var_els = [
+        ("rect", [(40, 115), (1360, 480)], (255, 255, 255), (226, 232, 240)),
+        ("t", sb, "1. 直立バリアブルフォント（HolonSans-Variable.otf）: 全7ウエイト段階補間スペクトラム", 16, (65, 145), (37, 99, 235)),
+        ("rect", [(40, 500), (1360, 865)], (255, 255, 255), (226, 232, 240)),
+        ("t", sb, "2. イタリックバリアブルフォント（HolonSans-Italic-Variable.otf）: 和欧11.0°傾斜 全7ウエイト補間", 16, (65, 530), (147, 51, 234)),
+    ]
+    wght_spectrum = [(100, "Thin (100)"), (200, "ExtraLight (200)"), (300, "Light (300)"), (400, "Regular (400)"),
+                     (500, "Medium (500)"), (600, "SemiBold (600)"), (700, "Bold (700)")]
+    for i, (w_val, label) in enumerate(wght_spectrum):
+        # Roman
+        y_r = 180 + i * 40
+        var_els.append(("t", sr, f"{label:<16}", 12, (65, y_r + 2), (100, 116, 139)))
+        var_els.append(("t", sv, "a w x v y  A B C  0 1 8  あいうえお  森国鬱  The quick brown fox", 18, (210, y_r), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}))
+        # Italic
+        y_i = 565 + i * 40
+        var_els.append(("t", sr, f"{label:<16}", 12, (65, y_i + 2), (100, 116, 139)))
+        var_els.append(("t", siv, "a w x v y  A B C  0 1 8  あいうえお  森国鬱  The quick brown fox", 18, (210, y_i), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}))
+
+    var_els.extend([
+        ("rect", [(40, 885), (1360, 1185)], (255, 255, 255), (226, 232, 240)),
+        ("t", sb, "3. Grade 軸（GRAD: -100 〜 +100）— レイアウト固定の精密太さ調整", 16, (65, 915), (217, 119, 6)),
+        ("rect", [(65, 965), (685, 1155)], (248, 250, 252), (226, 232, 240)),
+        ("t", sv, "白背景の標準ウェイト (GRAD: 0)。レイアウト完全維持。", 15, (85, 1035), (15, 23, 42), None, {"wght": 400, "GRAD": 0}),
+        ("t", sv, "GRAD: +100 で視認性向上: 細部の線の太さのみが増加。", 14, (85, 1085), (15, 23, 42), None, {"wght": 400, "GRAD": 100}),
+        ("rect", [(715, 965), (1335, 1155)], (15, 23, 42)),
+        ("t", sv, "黒背景で光の膨張を抑え、すっきり可読性を保つ (GRAD: -100)。", 15, (735, 1035), (241, 245, 249), None, {"wght": 400, "GRAD": -100}),
+    ])
+    out.append(_render_card(SPECIMENS_DIR / "specimen_variable_spectrum.png", 1400, 1230, "Holon Sans — 2ファイル分離バリアブルフォント（全ウエイト段階補間）", sb, var_els))
 
     cjk_els = [("rect", [(40, 115), (1160, 575)], (255, 255, 255), (226, 232, 240)),
                ("t", sb, "JIS X 0213 固有互換漢字（﨑・福・諸 等）＋ 非JIS CJK互換漢字 346字 ＝ 計468字完全網羅", 16, (65, 160), (37, 99, 235)),
@@ -656,11 +812,15 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
     out.append(_render_card(SPECIMENS_DIR / "specimen_mono_box_drawing_matrix.png", 1440, 620, "Holon Mono — 罫線・ブロック要素全種接続マトリクス", mr, [
         ("lines", mr, ["// 1. 単線・二重線・太線・角丸の組み合わせと交差", "┌─┬─┐ ┏━┳━┓ ╔═╦═╗ ╭─┬─╮ ┌┬┐ ┏┳┓ ╔╦╗ ╭┬╮",
                        "│ │ │ ┃ ┃ ┃ ║ ║ ║ │ │ │ ├┼┤ ┣╋┫ ╠╬╣ ├┼┤", "├─┼─┤ ┣━╋━┫ ╠═╬═╣ ├─┼─┤ └┴┘ ┗┻┛ ╚╩╝ ╰┴╯",
-                       "└─┴─┘ ┗━┻━┛ ╚═╩═╝ ╰─┴─╯  ※ すべての角と交差点が 1px の隙間なく連結",
-                       "// 2. ブロック要素（U+2580..U+259F）とプログレスバー", "█ ▀ ▄ ▌ ▐ ░ ▒ ▓   ▂ ▃ ▄ ▅ ▆ ▇ █ ▏ ▎ ▍ ▌ ▋ ▊ ▉ █",
+                       "└─┴─┘ ┗━┻━┛ ╚═╩═╝ ╰─┴─╯  ※ すべての角と交差点が 1px の隙間なく連結"], 18, 60, 125, 21, (126, 231, 135)),
+        ("lines", mr, ["// 2. ブロック要素（U+2580..U+259F）とプログレスバー", "█ ▀ ▄ ▌ ▐ ░ ▒ ▓   ▂ ▃ ▄ ▅ ▆ ▇ █ ▏ ▎ ▍ ▌ ▋ ▊ ▉ █",
                        "[████████████████████████████████████████████████████████] 100% Complete",
-                       "[████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  35% Initializing"], 18, 60, 125, 24, (126, 231, 135)),
+                       "[████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  35% Initializing"], 18, 60, 260, 28, (126, 231, 135)),
     ], dark=True))
+
+    # Full glyph repertoire contact sheets (Sans & Mono)
+    out.append(generate_all_glyphs_contact_sheet(sv, SPECIMENS_DIR / "specimen_all_glyphs_sans.png", "Holon Sans — 全グリフコンタクトシート (Complete Repertoire Contact Sheet)"))
+    out.append(generate_all_glyphs_contact_sheet(mr, SPECIMENS_DIR / "specimen_all_glyphs_mono.png", "Holon Mono — 全グリフコンタクトシート (Complete Repertoire Contact Sheet)"))
     return out
 
 
@@ -668,7 +828,7 @@ def test_specimen_generation(fonts_dir: Path, pytestconfig: pytest.Config) -> No
     if not pytestconfig.getoption("--specimens", default=False):
         pytest.skip("Specimen generation skipped (run with --specimens)")
     paths = generate_all_specimens(fonts_dir)
-    assert len(paths) == 14 and all(p.exists() and p.stat().st_size > 10_000 for p in paths)
+    assert len(paths) == 16 and all(p.exists() and p.stat().st_size > 10_000 for p in paths)
 
 
 if __name__ == "__main__":

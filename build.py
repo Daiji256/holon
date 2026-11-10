@@ -162,10 +162,10 @@ ZIP_SOURCES = {
         "url": "https://github.com/IBM/plex/releases/download/%40ibm/plex-sans-jp%403.0.0/sources.zip",
         "target_rel": Path("sources/masters/IBM Plex Sans JP.glyphs"),
     },
-    "sans": {
-        "tag": "@ibm/plex-sans@1.1.0", "sha256": "a9ac380518b3e6b91409e65ea3274d7f7d19db9b474507c66750287c7b4d614d",
-        "url": "https://github.com/IBM/plex/releases/download/%40ibm/plex-sans%401.1.0/sources.zip",
-        "target_rel": Path("sources/masters/IBM Plex Sans-Regular.ufo"),
+    "sans-variable": {
+        "tag": "@ibm/plex-sans-variable@0.2.0", "sha256": "50c6ff678938adc30c6c0b3dbde6fd4961f76422c4b814d741ba43caf3cfde69",
+        "url": "https://github.com/IBM/plex/releases/download/%40ibm/plex-sans-variable%400.2.0/sources.zip",
+        "target_rel": Path("sources/IBM Plex Sans Var-Regular.ufo"),
     },
     "mono-variable": {
         "tag": "@ibm/plex-mono-variable@1.0.0", "sha256": "cead332365e44b09552581533bae5dcbbd6e6ac80265afa915981260ba75eef3",
@@ -173,21 +173,6 @@ ZIP_SOURCES = {
         "target_rel": Path("source/IBM Plex Mono Var-Regular.ufo"),
     },
 }
-
-INITIAL_SYNC_GLYPHS = [
-    "yusmall-hira.half", "A.blackBox", "A.blackCircled", "A.roundBlackBox", "a-hira.box", "a-hira.circled", "a-hira.paren", "a-hira.roundBox", "asmall-hira",
-    "asmall-hira.hori", "asmall-hira.prop", "asmall-hira.prop.vert", "asmall-hira.vert", "ba_i_to-kata", "ba_i_to-kata.vert", "baareruSquare", "baareruSquare.vert",
-    "baatsuleftjust", "baatsuleftjust.vert", "bareruleftjust", "bareruleftjust.vert", "biruSquare", "biruSquare.vert", "de-kata.roundedBox", "doruSquare",
-    "doruSquare.vert", "ga_ru-kata", "ga_ru-kata.vert", "garonSquare", "garonSquare.vert", "guramutonSquare", "guramutonSquare.vert", "haitsu", "haitsu.vert",
-    "haituSquare", "herutsu", "herutsu.vert", "hoonSquare", "huranSquare", "huranSquare.vert", "ininguSquare", "ininguSquare.vert", "kiromeetoruSquare",
-    "ku-kata.box", "ku-kata.circled", "ku-kata.paren", "ku-kata.roundBox", "mahhaSquare", "mahhaSquare.vert", "mansyonSquare", "meetoruSquare",
-    "meetoruSquare.vert", "megatonSquare", "megatonSquare.vert", "mikuronSquare", "mikuronSquare.vert", "na-kata.box", "na-kata.circled", "na-kata.paren",
-    "na-kata.roundBox", "o-kata.blackBox", "o-kata.blackCircled", "o-kata.roundBlackBox", "paasentoSquare", "paasentoSquare.vert", "pesetaleftjust",
-    "pesetaleftjust.vert", "pikoSquare", "pikoSquare.vert", "se_n_ti-kata", "se_n_ti-kata.vert", "sentiSquare.vert", "sento", "sento.vert", "sentoSquare",
-    "siringuSquare", "siringuSquare.vert", "ta-kata.box", "ta-kata.circled", "ta-kata.paren", "ta-kata.roundBox", "uonSquare", "uonSquare.vert", "wa-hira",
-    "wa-hira.hori", "wa-hira.prop", "wa-hira.prop.vert", "wa-hira.vert", "wasmall-hira.half", "wasmall-hira.half.rotat", "watto", "watto.vert",
-    "wattoSquare", "wattoSquare.vert", "ya-hira.half", "ya-hira.half.rotat", "yusmall-hira.half.rotat",
-]
 
 CJK_MARKERS = (
     "hira", "kata", ".vert", ".hori", ".jp78", ".jp83", ".jp90", ".trad", ".nlck", ".hojo", ".expt", ".ruby",
@@ -247,13 +232,19 @@ def ensure_zip_source(key: str) -> Path:
     extract_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
+    # Extract any nested .ufo.zip archives if present (e.g. sans-variable)
+    for ufo_zip in extract_dir.rglob("*.ufo.zip"):
+        ufo_dest = ufo_zip.parent / ufo_zip.stem
+        if not ufo_dest.exists():
+            with zipfile.ZipFile(ufo_zip, "r") as uzf:
+                uzf.extractall(ufo_dest)
     return target
 
 
 def ensure_variable_sources(for_family: str = "sans") -> tuple[Path, Path]:
     """Ensure variable font master sources (.glyphs and Sans/Mono .ufo) exist in tmp/."""
     glyphs_path = ensure_zip_source("sans-jp")
-    second_key = "mono-variable" if for_family == "mono" else "sans"
+    second_key = "mono-variable" if for_family == "mono" else "sans-variable"
     latin_target = ensure_zip_source(second_key)
     return glyphs_path, latin_target.parent
 
@@ -320,12 +311,45 @@ def _set_tt_glyph(
         font["vmtx"].metrics[name] = (adv, tsb)
 
 
-def _snap_tt_box_drawing_glyph(glyph, glyf_table) -> None:
-    """Snap Box-drawing and Block Elements vertical boundaries to 950 (Ascent) and -225 (Descent)."""
+def _snap_tt_box_drawing_glyph(glyph, glyf_table, is_line: bool = False) -> None:
+    """Snap Box-drawing and Block Elements vertical boundaries to 950 (Ascent) and -225 (Descent),
+    and add pointed tips to line overhanging end caps so FreeType autohinter aligns all stems."""
     if glyph.numberOfContours <= 0:
         return
-    coords, _, _ = glyph.getCoordinates(glyf_table)
-    glyph.coordinates = GlyphCoordinates((x, 950 if y >= 800 else (-225 if y <= -250 else y)) for x, y in coords)
+    coords, endPts, flags = glyph.getCoordinates(glyf_table)
+    if not is_line:
+        glyph.coordinates = GlyphCoordinates((x, 950 if y >= 800 else (-225 if y <= -250 else y)) for x, y in coords)
+        glyph.recalcBounds(glyf_table)
+        return
+
+    new_coords, new_endPts, new_flags = [], [], []
+    s = 0
+    for e in endPts:
+        pts = [(x, 950 if y >= 800 else (-225 if y <= -250 else y)) for x, y in list(coords)[s:e+1]]
+        fls = list(flags)[s:e+1]
+        n = len(pts)
+        c_pts, c_fls = [], []
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            c_pts.append((x1, y1))
+            c_fls.append(fls[i])
+            if x1 == x2 and (x1 < 0 or x1 > 550) and abs(y2 - y1) > 0:
+                tip_x = x1 - 18 if x1 < 0 else x1 + 18
+                c_pts.append((tip_x, (y1 + y2) // 2))
+                c_fls.append(1)
+            elif y1 == y2 and (y1 >= 900 or y1 <= -200) and abs(x2 - x1) > 0:
+                tip_y = 968 if y1 >= 900 else -243
+                c_pts.append(((x1 + x2) // 2, tip_y))
+                c_fls.append(1)
+        new_coords.extend(c_pts)
+        new_flags.extend(c_fls)
+        new_endPts.append(len(new_coords) - 1)
+        s = e + 1
+
+    glyph.coordinates = GlyphCoordinates(new_coords)
+    glyph.endPtsOfContours = new_endPts
+    glyph.flags = bytearray(new_flags)
     glyph.recalcBounds(glyf_table)
 
 
@@ -411,6 +435,14 @@ def _apply_mono_metrics_and_cleanup(font: TTFont, clean_gsub: bool = True) -> No
         for rec in gsub.FeatureList.FeatureRecord:
             if rec.FeatureTag == "vrt2" and vert_idx:
                 rec.Feature.LookupListIndex = list(vert_idx)
+            elif rec.FeatureTag in ("vert", "vrt2"):
+                for lidx in rec.Feature.LookupListIndex:
+                    for st in gsub.LookupList.Lookup[lidx].SubTable:
+                        if hasattr(st, "mapping"):
+                            st.mapping = {
+                                k: v for k, v in st.mapping.items()
+                                if not ("box" in k.lower() or "box" in v.lower() or "uni25" in k.lower() or "uni25" in v.lower())
+                            }
             elif rec.FeatureTag == "zero":
                 for lidx in rec.Feature.LookupListIndex:
                     for st in gsub.LookupList.Lookup[lidx].SubTable:
@@ -731,8 +763,11 @@ def build_static_style(
         scaled = _transform_tt_glyph(glyph_set_latin, gname, mat, glyf_jp)
         orig_w, orig_lsb = font_latin["hmtx"][gname]
         if is_mono and (0x2500 <= ucode <= 0x259F or "bxd" in gname or "block" in gname):
-            _snap_tt_box_drawing_glyph(scaled, glyf_jp)
+            is_line = (0x2500 <= ucode <= 0x257F)
+            _snap_tt_box_drawing_glyph(scaled, glyf_jp, is_line=is_line)
         new_w, new_lsb = _latin_metrics(ucode, orig_w, orig_lsb, is_mono)
+        if is_mono and (0x2500 <= ucode <= 0x257F):
+            new_lsb = scaled.xMin
         _set_tt_glyph(font_jp, gname, scaled, new_w, lsb=new_lsb, v_adv=full_width)
         replaced_glyphs.add(gname)
         if gname == "zero.alt01" and "zero.zero" in glyf_jp:
@@ -860,35 +895,15 @@ def _apply_ufo_cjk_transform(ufo: ufoLib2.Font, family_name: str, italic: bool =
                     g.width = round(orig_w * SCALE_SANS)
 
 
-def _sync_decomposed_across_masters(
-    ufo_thin: ufoLib2.Font, ufo_reg: ufoLib2.Font, ufo_bold: ufoLib2.Font,
-    src_ufos: tuple[ufoLib2.Font, ufoLib2.Font, ufoLib2.Font],
-    gname: str, src_name: str, fallback_g, unicodes: list[int],
-    width_scale: float = 1.0, point_matrix: tuple[float, ...] | None = None,
-    fixed_width: int | None = None,
-) -> None:
-    """Decompose a glyph across Thin/Reg/Bold masters and enforce interpolation compatibility."""
-    decomposed, sigs = [], []
-    for s_ufo in src_ufos:
-        src_g = s_ufo.get(src_name, fallback_g)
-        w = fixed_width if fixed_width is not None else (round(src_g.width * width_scale) if not gname.endswith(".rotat") else src_g.width)
-        dg = ufoLib2.objects.Glyph(name=gname, width=w, height=1000, unicodes=unicodes)
-        dg.verticalOrigin = 880
-        rpen = DecomposingRecordingPointPen(s_ufo)
-        src_g.drawPoints(rpen)
-        ppen = TransformPointPen(dg.getPointPen(), point_matrix) if point_matrix else dg.getPointPen()
-        rpen.replay(ppen)
-        decomposed.append(dg)
-        sigs.append([(len(c.points), [p.segmentType for p in c.points]) for c in dg.contours])
-
-    t, r, b = (decomposed if sigs[0] == sigs[1] == sigs[2] else
-               (decomposed[1].copy(), decomposed[1], decomposed[2]) if sigs[1] == sigs[2] else
-               (decomposed[1].copy(), decomposed[1], decomposed[1].copy()))
-    ufo_thin[gname], ufo_reg[gname], ufo_bold[gname] = t, r, b
-
-    for dst_ufo in (ufo_thin, ufo_reg, ufo_bold):
-        if "public.glyphOrder" in dst_ufo.lib and gname not in dst_ufo.lib["public.glyphOrder"]:
-            dst_ufo.lib["public.glyphOrder"].append(gname)
+def decompose_ufo(ufo: ufoLib2.Font) -> None:
+    """Decompose all components into outlines within a UFO font."""
+    for g in ufo:
+        if g.components:
+            rpen = DecomposingRecordingPointPen(ufo)
+            g.drawPoints(rpen)
+            g.clearComponents()
+            g.clearContours()
+            rpen.replay(g.getPointPen())
 
 
 def _merge_sans_variable_latin(
@@ -897,7 +912,9 @@ def _merge_sans_variable_latin(
 ) -> int:
     """Merge Latin/symbol glyphs from IBM Plex Sans masters into Japanese masters at 1.02x scale."""
     stems = ("Thin Italic", "Italic", "Bold Italic") if italic else ("Thin", "Regular", "Bold")
-    src_ufos = tuple(ufoLib2.Font.open(sans_masters_dir / f"IBM Plex Sans-{stem}.ufo") for stem in stems)
+    src_ufos = tuple(ufoLib2.Font.open(sans_masters_dir / f"IBM Plex Sans Var-{stem}.ufo") for stem in stems)
+    for s_ufo in src_ufos:
+        decompose_ufo(s_ufo)
     dst_ufos = (ufo_thin, ufo_reg, ufo_bold)
 
     for u in dst_ufos:
@@ -938,10 +955,18 @@ def _merge_sans_variable_latin(
                 ps_map.pop(old_jp, None)
 
         fixed_w = 1000 if (unicodes & {0x2001, 0x2003}) else (500 if (unicodes & {0x2000, 0x2002}) else None)
-        _sync_decomposed_across_masters(
-            ufo_thin, ufo_reg, ufo_bold, src_ufos, g_r.name, g_r.name, g_r, sorted(unicodes),
-            width_scale=SCALE_SANS, point_matrix=pt_mat, fixed_width=fixed_w,
-        )
+        sorted_u = sorted(unicodes)
+        for dst_u, src_u in zip(dst_ufos, src_ufos):
+            src_g = src_u[g_r.name]
+            ng = dst_u.newGlyph(g_r.name) if g_r.name not in dst_u else dst_u[g_r.name]
+            ng.clear()
+            ng.unicodes = sorted_u
+            ng.width = fixed_w if fixed_w is not None else (round(src_g.width * SCALE_SANS) if not g_r.name.endswith(".rotat") else src_g.width)
+            ng.height = 1000
+            ng.verticalOrigin = 880
+            src_g.drawPoints(TransformPointPen(ng.getPointPen(), pt_mat))
+            if "public.glyphOrder" in dst_u.lib and g_r.name not in dst_u.lib["public.glyphOrder"]:
+                dst_u.lib["public.glyphOrder"].append(g_r.name)
         added += 1
 
     # Ensure U+02C9 (MODIFIER LETTER MACRON) has 0 advance width matching static TTF
@@ -960,6 +985,7 @@ def _merge_mono_variable_latin(ufo_jp: ufoLib2.Font, ufo_mono: ufoLib2.Font) -> 
     """Merge IBM Plex Mono Var Latin/symbol/box-drawing glyphs into Japanese UFO master."""
     ufo_jp.kerning.clear()
     ufo_mono.kerning.clear()
+    decompose_ufo(ufo_mono)
     u_to_jp_gname = {u: g.name for g in ufo_jp for u in (g.unicodes or [])}
     ps_map = ufo_jp.lib.get("public.postscriptNames", {})
     ps_to_jp_gname = {v: k for k, v in ps_map.items()}
@@ -1080,20 +1106,8 @@ def _compile_and_export_vf(
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     inter_otf = TMP_DIR / f"{family_compact}-{style_label}-Variable.inter.otf"
 
-    for attempt in range(20):
-        try:
-            print(f"Compiling CFF2 variable font ({family_name} {style_label}, attempt {attempt + 1})...")
-            var_font = ufo2ft.compileVariableCFF2(var_ds)
-            break
-        except Exception as e:
-            m = re.search(r"Glyph '([^']+)'", str(e))
-            if m and m.group(1) in ufo_reg:
-                bad = m.group(1)
-                print(f"Synchronizing non-interpolatable glyph across masters: '{bad}'")
-                for m_ufo in (ufo_thin, ufo_bold, ufo_grad_pos, ufo_grad_neg):
-                    m_ufo[bad] = ufo_reg[bad].copy()
-                continue
-            raise RuntimeError(f"Variable compilation failed ({family_name} {style_label}): {e}") from e
+    print(f"Compiling CFF2 variable font ({family_name} {style_label})...")
+    var_font = ufo2ft.compileVariableCFF2(var_ds)
 
     italic_angle = MONO_ITALIC_ANGLE if is_mono else SANS_ITALIC_ANGLE
     ps_suffix = apply_opentype_metadata(var_font, family_name, "Regular", italic, italic_angle, is_variable=True)
@@ -1137,6 +1151,8 @@ def build_family_variable_fonts(
     u_jp_thin, u_jp_reg, u_jp_bold = ds.sources[0].font, ds.sources[1].font, ds.sources[2].font
 
     for u in (u_jp_thin, u_jp_reg, u_jp_bold):
+        u.lib.pop("com.github.googlei18n.ufo2ft.filters", None)
+        decompose_ufo(u)
         u.info.familyName = family_name
         for g in u:
             if ORIGINAL_WIDTH_KEY in g.lib:
@@ -1147,11 +1163,6 @@ def build_family_variable_fonts(
             u["emptyset.full"].unicodes = []
             u["emptyset"].unicodes = [0x2205]
         _add_vertical_semicolon_to_ufo(u)
-
-    for gname in INITIAL_SYNC_GLYPHS:
-        if gname in u_jp_reg:
-            u_jp_thin[gname] = u_jp_reg[gname].copy()
-            u_jp_bold[gname] = u_jp_reg[gname].copy()
 
     if is_mono:
         add_cjk_compatibility_mappings_to_ufos([u_jp_thin, u_jp_reg, u_jp_bold], u_jp_reg)
