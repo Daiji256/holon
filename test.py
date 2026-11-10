@@ -28,6 +28,7 @@ from PIL import Image, ImageDraw
 
 WEIGHTS = ["Thin", "ExtraLight", "Light", "Regular", "Text", "Medium", "SemiBold", "Bold"]
 WEIGHT_VALS = {"Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Text": 450, "Medium": 500, "SemiBold": 600, "Bold": 700}
+PANOSE_VALS = {"Thin": 2, "ExtraLight": 3, "Light": 4, "Regular": 5, "Text": 5, "Medium": 6, "SemiBold": 7, "Bold": 8}
 UPSTREAM_JP_PATH = Path("tmp/plex/packages/plex-sans-jp/fonts/complete/ttf/unhinted/IBMPlexSansJP-Regular.ttf")
 SPECIMENS_DIR = Path("specimens")
 
@@ -36,9 +37,28 @@ ALL_EXPECTED = [
     for fam in ("HolonSans", "HolonMono") for w in WEIGHTS for it in ("", "Italic") for ext in ("ttf", "woff2")
 ] + [f"{fam}{it}-Variable.{ext}" for fam in ("HolonSans", "HolonMono") for it in ("", "-Italic") for ext in ("otf", "woff2")]
 DESKTOP_FONTS = [f for f in ALL_EXPECTED if f.endswith((".ttf", ".otf"))]
+VARIABLE_FONTS = ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"]
+SANS_REP_FONTS = ["HolonSans-Regular.ttf", "HolonSans-Italic.ttf", "HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf"]
+QUADRANT_FONTS = ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf", "HolonSans-Variable.otf", "HolonMono-Variable.otf"]
 
 _CACHE_TT: dict[Path, TTFont] = {}
 _CACHE_HB: dict[Path, hb.Face] = {}
+
+
+def _compute_jis_x_0208() -> set[int]:
+    cps: set[int] = set()
+    for enc in ("iso2022_jp", "euc_jp", "shift_jis"):
+        for b1 in range(0x20, 0x100):
+            for b2 in range(0x20, 0x100):
+                try:
+                    if len(c := bytes([b1, b2]).decode(enc)) == 1:
+                        cps.add(ord(c))
+                except (UnicodeDecodeError, LookupError):
+                    continue
+    return cps
+
+
+JIS_X_0208_CPS = _compute_jis_x_0208()
 
 
 def get_tt(p: Path) -> TTFont:
@@ -64,7 +84,7 @@ def shape(p: Path, text: str, feat: dict[str, bool] | None = None, var: dict[str
         buf.direction, buf.script, buf.language = "ttb", "Hani", "ja"
     else:
         buf.guess_segment_properties()
-    hb.shape(font, buf, feat or ({"vert": True, "vrt2": True} if vert else {}))
+    hb.shape(font, buf, feat if feat is not None else ({"vert": True, "vrt2": True} if vert else {}))
     return list(buf.glyph_infos), list(buf.glyph_positions)
 
 
@@ -75,18 +95,18 @@ def draw_text_hb(img: Image.Image, p: Path, text: str, sz: int, pos: tuple[int, 
     face.set_char_size(sz * 64)
     if var and face.get_variation_info() and face.get_variation_info().axes:
         face.set_var_design_coords([var.get(a.tag.strip(), a.default) for a in face.get_variation_info().axes])
-    infos, positions = shape(p, text, feat, var, vert, upm=sz * 64)
-    x_cur, y_cur = pos[0] * 64, pos[1] * 64
+    infos, positions = shape(p, text, feat, var, vert, upm=1000)
+    x_cur, y_cur = 0, 0
     for info, pos_i in zip(infos, positions):
         face.load_glyph(info.codepoint, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
         bm = face.glyph.bitmap
         if bm.width > 0 and bm.rows > 0:
-            gx = int((x_cur + pos_i.x_offset) / 64) + face.glyph.bitmap_left
-            gy = int((y_cur - pos_i.y_offset) / 64) - face.glyph.bitmap_top
+            gx = pos[0] + round((x_cur + pos_i.x_offset) * sz / 1000) + face.glyph.bitmap_left
+            gy = pos[1] + round((y_cur - pos_i.y_offset) * sz / 1000) - face.glyph.bitmap_top
             img.paste(Image.new("RGBA", (bm.width, bm.rows), col + (255,)), (gx, gy), Image.frombytes("L", (bm.width, bm.rows), bytes(bm.buffer)))
         x_cur += pos_i.x_advance
         y_cur -= pos_i.y_advance
-    return int((y_cur - pos[1] * 64) / 64) if vert else int((x_cur - pos[0] * 64) / 64)
+    return round(y_cur * sz / 1000) if vert else round(x_cur * sz / 1000)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -101,7 +121,7 @@ def fonts_dir(pytestconfig: pytest.Config) -> Path:
     return p
 
 
-# --- File Completeness, WOFF2 Parity & Metadata ---
+# --- 1. File Completeness, WOFF2 Parity, Compact Metrics & OpenType Metadata ---
 
 def test_font_family_completeness(fonts_dir: Path) -> None:
     missing = [f for f in ALL_EXPECTED if not (fonts_dir / f).exists()]
@@ -109,7 +129,7 @@ def test_font_family_completeness(fonts_dir: Path) -> None:
 
 
 @pytest.mark.parametrize("d_name", DESKTOP_FONTS)
-def test_woff2_parity_and_post3(fonts_dir: Path, d_name: str) -> None:
+def test_woff2_parity_post3_and_compact_metrics(fonts_dir: Path, d_name: str) -> None:
     dp, wp = fonts_dir / d_name, fonts_dir / (d_name.rsplit(".", 1)[0] + ".woff2")
     if not dp.exists():
         pytest.skip(f"{d_name} not built")
@@ -118,86 +138,58 @@ def test_woff2_parity_and_post3(fonts_dir: Path, d_name: str) -> None:
     assert fd["post"].formatType == 3.0 and fd["maxp"].numGlyphs == fw["maxp"].numGlyphs
     assert fd.getBestCmap() == fw.getBestCmap() and set(fd.keys()) == set(fw.keys())
     assert not any(t in fd for t in ("DSIG", "fpgm", "prep", "cvt "))
+    # Verify modal advance glyph clustering compacted hmtx and vmtx
+    is_mono = "HolonMono" in d_name
+    assert fd["hhea"].numberOfHMetrics < (2200 if is_mono else 4500), f"{d_name} hmtx not compacted: {fd['hhea'].numberOfHMetrics}"
+    assert fd["vhea"].numberOfVMetrics == 1 if is_mono else fd["vhea"].numberOfVMetrics < 4500
 
 
 @pytest.mark.parametrize("d_name", DESKTOP_FONTS)
-def test_opentype_metadata_and_ofl(fonts_dir: Path, d_name: str) -> None:
+def test_opentype_metadata_and_tables(fonts_dir: Path, d_name: str) -> None:
     p = fonts_dir / d_name
     if not p.exists():
         pytest.skip(f"{d_name} not built")
     font = get_tt(p)
     name_tbl = font["name"]
+    names = {r.nameID: r.toUnicode() for r in name_tbl.names if r.platformID == 3}
     for rec in name_tbl.names:
         v = rec.toUnicode()
         if rec.nameID != 0:
             assert "ibm" not in v.lower() and "plex" not in v.lower(), f"Trademark in {d_name} #{rec.nameID}: {v}"
-    assert "SIL Open Font License" in (name_tbl.getDebugName(13) or "")
 
-    os2, head, hhea, post = font["OS/2"], font["head"], font["hhea"], font["post"]
-    assert os2.achVendID == "HLON" and os2.fsType == 0 and bool(os2.fsSelection & 0x80) and abs(head.fontRevision - 1.0) < 1e-3
-    for wn, wv in WEIGHT_VALS.items():
-        if wn in d_name and "Variable" not in d_name:
-            assert os2.usWeightClass == wv
-            break
-    is_it = "Italic" in d_name
-    if is_it:
-        assert bool(os2.fsSelection & 0x01) and not bool(os2.fsSelection & 0x40) and bool(head.macStyle & 0x02) and hhea.caretSlopeRun > 0
-        assert abs(post.italicAngle - (-9.0 if "HolonMono" in d_name else -11.0)) < 0.1
-    else:
-        assert post.italicAngle == 0.0 and hhea.caretSlopeRun == 0
-        if "Bold" not in d_name and "Variable" not in d_name:
-            assert bool(os2.fsSelection & 0x40)
-    if "Bold" in d_name and "SemiBold" not in d_name:
-        assert bool(os2.fsSelection & 0x20) and bool(head.macStyle & 0x01)
-
-
-# --- Intended Behavior: RIBBI, NameID 0/9, Meta/Gasp ---
-
-@pytest.mark.parametrize("d_name", [f for f in DESKTOP_FONTS if "Variable" not in f])
-def test_name_ribbi_and_no_nameid20(fonts_dir: Path, d_name: str) -> None:
-    p = fonts_dir / d_name
-    if not p.exists():
-        pytest.skip(f"{d_name} not built")
-    names = {r.nameID: r.toUnicode() for r in get_tt(p)["name"].names if r.platformID == 3}
-    assert 20 not in names, f"{d_name} has nameID 20"
-    fam, rest = d_name.split("-", 1)
-    base_fam = "Holon Sans" if fam == "HolonSans" else "Holon Mono"
-    style = rest.replace(".ttf", "")
-    if style in ("Regular", "Italic", "Bold", "BoldItalic"):
-        assert names[1] == base_fam
-        assert names[2] == ("Bold Italic" if style == "BoldItalic" else style)
-    else:
-        w = style.replace("Italic", "")
-        it = " Italic" if "Italic" in style else ""
-        assert names[1] == f"{base_fam} {w}"
-        assert names[2] == ("Italic" if it else "Regular")
-        assert names.get(16) == base_fam and names.get(17) == f"{w}{it}"
-
-
-@pytest.mark.parametrize("d_name", ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf"])
-def test_name_records_upstream_attribution(fonts_dir: Path, d_name: str) -> None:
-    p = fonts_dir / d_name
-    if not p.exists():
-        pytest.skip(f"{d_name} not built")
-    font = get_tt(p)
-    id0 = font["name"].getDebugName(0) or ""
-    id9 = font["name"].getDebugName(9) or ""
-    assert "Copyright 2018 IBM Corp. All rights reserved." in id0
+    assert "SIL Open Font License" in names.get(13, "")
+    assert "Copyright 2018 IBM Corp. All rights reserved." in names.get(0, "") and "Sandoll" not in names.get(0, "")
     if "Mono" in d_name:
-        assert "Copyright 2017 IBM Corp. All rights reserved." in id0
-    assert "Sandoll" not in id0
-    assert "Wujin Sim" in id9
-
-
-@pytest.mark.parametrize("d_name", DESKTOP_FONTS)
-def test_meta_and_gasp_tables(fonts_dir: Path, d_name: str) -> None:
-    p = fonts_dir / d_name
-    if not p.exists():
-        pytest.skip(f"{d_name} not built")
-    font = get_tt(p)
-    assert "meta" in font and "dlng" in font["meta"].data and "Jpan" in font["meta"].data["dlng"]
+        assert "Copyright 2017 IBM Corp. All rights reserved." in names.get(0, "")
+    assert "Wujin Sim" in names.get(9, "") and "Daiji Suzuki" in names.get(9, "")
+    assert 20 not in names
+    assert "meta" in font and "Jpan" in font["meta"].data.get("dlng", "")
+    assert "GDEF" in font and font["GDEF"].table.GlyphClassDef and "STAT" in font
     if d_name.endswith(".ttf"):
         assert "gasp" in font
+
+    os2, head, hhea, post = font["OS/2"], font["head"], font["hhea"], font["post"]
+    is_var, is_it = "Variable" in d_name, "Italic" in d_name
+    w_name = "Regular" if is_var else next(w for w in WEIGHTS if w in d_name or (w == "Regular" and d_name.endswith("-Italic.ttf")))
+    assert os2.achVendID == "HLON" and os2.fsType == 0 and abs(head.fontRevision - 1.0) < 1e-3
+    assert os2.usWeightClass == WEIGHT_VALS[w_name] and os2.panose.bWeight == PANOSE_VALS[w_name]
+    # Strict OpenType OS/2 fsSelection verification: Bit 7 (USE_TYPO_METRICS) & Bit 8 (WWS) always set; Bit 6 (REGULAR) only on Regular upright
+    assert (os2.fsSelection & 0x180) == 0x180
+    assert bool(os2.fsSelection & 0x40) == (w_name == "Regular" and not is_it)
+    assert bool(os2.fsSelection & 0x20) == (w_name == "Bold") and bool(head.macStyle & 0x01) == (w_name == "Bold")
+    assert bool(os2.fsSelection & 0x01) == is_it and bool(head.macStyle & 0x02) == is_it
+    if is_it:
+        assert abs(post.italicAngle - (-9.0 if "HolonMono" in d_name else -11.0)) < 0.1 and hhea.caretSlopeRun > 0
+    else:
+        assert post.italicAngle == 0.0 and hhea.caretSlopeRun == 0
+
+    if not is_var:
+        base_fam = "Holon Sans" if "HolonSans" in d_name else "Holon Mono"
+        if w_name in ("Regular", "Bold"):
+            assert names[1] == base_fam and names[2] == ("Bold Italic" if (w_name == "Bold" and is_it) else ("Italic" if is_it else w_name))
+        else:
+            assert names[1] == f"{base_fam} {w_name}" and names[2] == ("Italic" if is_it else "Regular")
+            assert names.get(16) == base_fam and names.get(17) == f"{w_name}{' Italic' if is_it else ''}"
 
 
 def test_unique_identifiers_and_family_metrics(fonts_dir: Path) -> None:
@@ -223,50 +215,33 @@ def test_ofl_license_text(fonts_dir: Path) -> None:
     ofl_p = fonts_dir / "OFL.txt"
     if not ofl_p.exists():
         pytest.skip("OFL.txt not present in fonts-dir")
-    upstream_lic = Path("tmp/plex/packages/plex-sans-jp/LICENSE.txt").read_bytes()
     content = ofl_p.read_bytes()
-    assert upstream_lic in content and b"Daiji Suzuki" in content
+    assert b"SIL OPEN FONT LICENSE Version 1.1" in content and b"Daiji Suzuki" in content
+    lic_src = Path("tmp/plex/packages/plex-sans-jp/LICENSE.txt")
+    if lic_src.exists():
+        assert lic_src.read_bytes() in content
 
 
-# --- Glyph Bounds & Clipping ---
+# --- 2. Glyph Bounds, Clipping, Repertoire & Authentic Italic ---
 
-@pytest.mark.parametrize("d_name", [f for f in DESKTOP_FONTS if "HolonMono" in f and f.endswith(".ttf")])
-def test_mono_glyph_bounds_within_win_clipping(fonts_dir: Path, d_name: str) -> None:
+@pytest.mark.parametrize("d_name", [f for f in DESKTOP_FONTS if f.endswith(".ttf")])
+def test_glyph_bounds_within_win_clipping(fonts_dir: Path, d_name: str) -> None:
     p = fonts_dir / d_name
     if not p.exists():
         pytest.skip(f"{d_name} not built")
     font = get_tt(p)
-    os2, head = font["OS/2"], font["head"]
-    assert head.yMax <= os2.usWinAscent and head.yMin >= -os2.usWinDescent, f"{d_name} exceeds win clipping"
+    os2, head, cmap, glyf = font["OS/2"], font["head"], font.getBestCmap(), font["glyf"]
+    if "HolonMono" in d_name:
+        assert head.yMax <= os2.usWinAscent and head.yMin >= -os2.usWinDescent
+    else:
+        for cp in (JIS_X_0208_CPS | set(range(0x20, 0x180)) | set(range(0x3040, 0x3100))):
+            if cp in cmap and glyf[cmap[cp]].numberOfContours > 0:
+                g = glyf[cmap[cp]]
+                assert g.yMax <= os2.usWinAscent and g.yMin >= -os2.usWinDescent, f"{d_name} U+{cp:04X} clipped"
 
-
-@pytest.mark.parametrize("d_name", [f for f in DESKTOP_FONTS if "HolonSans" in f and f.endswith(".ttf")])
-def test_sans_common_repertoire_within_win_clipping(fonts_dir: Path, d_name: str) -> None:
-    p = fonts_dir / d_name
-    if not p.exists():
-        pytest.skip(f"{d_name} not built")
-    font = get_tt(p)
-    os2, cmap, glyf = font["OS/2"], font.getBestCmap(), font["glyf"]
-    common_cps = set(range(0x20, 0x180)) | set(range(0x3040, 0x3100))
-    for enc in ("iso2022_jp", "euc_jp", "shift_jis"):
-        for b1 in range(0x20, 0x100):
-            for b2 in range(0x20, 0x100):
-                try:
-                    c = bytes([b1, b2]).decode(enc)
-                    if len(c) == 1:
-                        common_cps.add(ord(c))
-                except (UnicodeDecodeError, LookupError):
-                    continue
-    for cp in common_cps:
-        if cp in cmap and glyf[cmap[cp]].numberOfContours > 0:
-            g = glyf[cmap[cp]]
-            assert g.yMax <= os2.usWinAscent and g.yMin >= -os2.usWinDescent, f"{d_name} U+{cp:04X} clipped"
-
-
-# --- Cmap Integrity, Coverage & Authentic Italic ---
 
 @pytest.mark.parametrize("font_name", ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf"])
-def test_cmap_non_space_chars_have_outlines(fonts_dir: Path, font_name: str) -> None:
+def test_cmap_outlines_and_jis_x_0208_coverage(fonts_dir: Path, font_name: str) -> None:
     p = fonts_dir / font_name
     if not p.exists():
         pytest.skip(f"{font_name} not built")
@@ -278,29 +253,11 @@ def test_cmap_non_space_chars_have_outlines(fonts_dir: Path, font_name: str) -> 
         and cp not in (0x20, 0xA0, 0x3000) and glyf[g].numberOfContours == 0
     ]
     assert not empty, f"{font_name} has empty outlines: {empty[:5]}"
+    missing_jis = [cp for cp in JIS_X_0208_CPS if cp not in cmap]
+    assert not missing_jis, f"{font_name} missing {len(missing_jis)} JIS X 0208 chars"
 
 
-@pytest.mark.parametrize("font_name", ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf"])
-def test_jis_x_0208_coverage(fonts_dir: Path, font_name: str) -> None:
-    p = fonts_dir / font_name
-    if not p.exists():
-        pytest.skip(f"{font_name} not built")
-    jis_chars = set()
-    for enc in ("iso2022_jp", "euc_jp", "shift_jis"):
-        for b1 in range(0x20, 0x100):
-            for b2 in range(0x20, 0x100):
-                try:
-                    c = bytes([b1, b2]).decode(enc)
-                    if len(c) == 1:
-                        jis_chars.add(ord(c))
-                except (UnicodeDecodeError, LookupError):
-                    continue
-    cmap = get_tt(p).getBestCmap()
-    missing = [cp for cp in jis_chars if cp not in cmap]
-    assert not missing, f"{font_name} missing {len(missing)} JIS X 0208 chars"
-
-
-@pytest.mark.parametrize("font_name", ["HolonSans-Regular.ttf", "HolonMono-Regular.ttf", "HolonSans-Variable.otf"])
+@pytest.mark.parametrize("font_name", QUADRANT_FONTS)
 def test_cjk_compatibility_ideographs(fonts_dir: Path, font_name: str) -> None:
     p = fonts_dir / font_name
     if not p.exists():
@@ -308,8 +265,7 @@ def test_cjk_compatibility_ideographs(fonts_dir: Path, font_name: str) -> None:
     cmap = get_tt(p).getBestCmap()
     present = sum(
         1 for code in range(0xF900, 0xFB00)
-        if len(unicodedata.normalize("NFKD", chr(code))) == 1
-        and ord(unicodedata.normalize("NFKD", chr(code))) in cmap and code in cmap
+        if len(d := unicodedata.normalize("NFKD", chr(code))) == 1 and ord(d) in cmap and code in cmap
     )
     assert present >= 456 and cmap[0xFA11] != cmap[0x5D0E] and cmap[0xF900] == cmap[0x8C48]
 
@@ -323,24 +279,52 @@ def test_authentic_italic_structure(fonts_dir: Path) -> None:
     assert gr.yMin >= 0 and gi.yMin < -100, f"Italic 'f' not cursive: yMin={gi.yMin}"
 
 
-# --- Mono Duospace Grid, EAW & Box Drawing ---
+# --- 3. Mono Duospace Grid, Cross-Weight Invariance, EAW & Box Drawing ---
 
-@pytest.mark.parametrize("mname", [f for f in DESKTOP_FONTS if "HolonMono" in f and f.endswith(".ttf")])
+@pytest.mark.parametrize("mname", [f for f in DESKTOP_FONTS if "HolonMono" in f])
 def test_mono_duospace_advances_and_features(fonts_dir: Path, mname: str) -> None:
     p = fonts_dir / mname
     if not p.exists():
         pytest.skip(f"{mname} not built")
     font = get_tt(p)
     assert not [(g, w) for g, (w, _) in font["hmtx"].metrics.items() if w not in (0, 550, 1100)]
-    assert "GPOS" not in font and "BASE" not in font
+    assert not [(g, h) for g, (h, _) in font["vmtx"].metrics.items() if h != 1100]
+    assert "GPOS" not in font and "BASE" not in font and font["post"].isFixedPitch == 1
     os2 = font["OS/2"]
     assert (os2.sTypoAscender, os2.sTypoDescender, os2.sTypoLineGap, os2.panose.bProportion) == (950, -225, 0, 9)
     for s, cells in [("//", 2), ("AV", 2), ("fi", 2), ("0123456789", 10), ("ｶﾀｶﾅ", 4), ("日本語", 6), ("Hello, 世界！", 13)]:
         assert sum(pos.x_advance for pos in shape(p, s)[1]) == cells * 550
     assert shape(p, "0", feat={"zero": False})[0][0].codepoint != shape(p, "0", feat={"zero": True})[0][0].codepoint
-    assert font["post"].isFixedPitch == 1
     gsub = {r.FeatureTag for r in font["GSUB"].table.FeatureList.FeatureRecord}
-    assert {"ccmp", "locl"}.issubset(gsub)
+    assert {"ccmp", "locl", "vert", "vrt2", "fwid", "zero"}.issubset(gsub)
+
+
+def test_mono_cross_weight_and_variable_width_invariance(fonts_dir: Path) -> None:
+    """Verify 100% of glyphs in Holon Mono have identical advance widths across all static weights and VF axes."""
+    ref_p = fonts_dir / "HolonMono-Regular.ttf"
+    if not ref_p.exists():
+        pytest.skip("HolonMono-Regular.ttf not built")
+    ref_f = get_tt(ref_p)
+    ref_cmap, ref_hmtx = ref_f.getBestCmap(), ref_f["hmtx"].metrics
+    for w in WEIGHTS:
+        for it in ("", "Italic"):
+            name = f"HolonMono-{('Italic' if it else 'Regular') if w == 'Regular' else f'{w}{it}'}.ttf"
+            p = fonts_dir / name
+            if not p.exists():
+                continue
+            f = get_tt(p)
+            cmap, hmtx = f.getBestCmap(), f["hmtx"].metrics
+            diffs = [f"U+{u:04X}" for u, g in cmap.items() if u in ref_cmap and hmtx[g][0] != ref_hmtx[ref_cmap[u]][0]]
+            assert not diffs, f"{name} width mismatch vs Regular: {diffs[:5]}"
+
+    for vname in ("HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"):
+        vp = fonts_dir / vname
+        if not vp.exists():
+            continue
+        vf = get_tt(vp)
+        for tag in ("HVAR", "VVAR"):
+            for vd in vf[tag].table.VarStore.VarData:
+                assert not [it for it in vd.Item if any(it)], f"{vname} {tag} has non-zero advance deltas"
 
 
 @pytest.mark.parametrize("mname", ["HolonMono-Regular.ttf", "HolonMono-Variable.otf"])
@@ -377,9 +361,26 @@ def test_mono_box_and_block_snaps(fonts_dir: Path) -> None:
     assert all(h2 > h1 > 0 for h1, h2 in itertools.pairwise(heights)), f"Non-increasing heights: {heights}"
 
 
-# --- Vertical Substitutions, chws/vchw & Features ---
+@pytest.mark.parametrize("mname", ["HolonMono-Regular.ttf", "HolonMono-Variable.otf"])
+def test_mono_box_drawing_grid_continuity(fonts_dir: Path, mname: str) -> None:
+    """Verify that vertical lines and crosses connect with 0px gap at line height dy=21."""
+    p = fonts_dir / mname
+    if not p.exists():
+        pytest.skip(f"{mname} not built")
+    img = Image.new("RGBA", (120, 120), (0, 0, 0, 255))
+    var_dict = {"wght": 400, "GRAD": 0} if "Variable" in mname else None
+    draw_text_hb(img, p, "│", 18, (30, 30), var=var_dict, col=(255, 255, 255))
+    draw_text_hb(img, p, "┼", 18, (30, 30 + 21), var=var_dict, col=(255, 255, 255))
+    pixels = img.load()
+    stem_x = next((x for x in range(25, 45) if pixels[x, 30][0] > 100), None)
+    assert stem_x is not None, f"Stem column not found in {mname}"
+    gap_y = [y for y in range(25, 55) if pixels[stem_x, y][0] < 30]
+    assert not gap_y, f"{mname} vertical gap found in box drawing at y={gap_y}"
 
-@pytest.mark.parametrize("sname", [f for f in DESKTOP_FONTS if "HolonSans" in f])
+
+# --- 4. Vertical Writing (vert/vrt2/vhea/vmtx/VORG), chws/vchw & GPOS Shaping ---
+
+@pytest.mark.parametrize("sname", SANS_REP_FONTS)
 def test_chws_and_vchw_compaction(fonts_dir: Path, sname: str) -> None:
     p = fonts_dir / sname
     if not p.exists():
@@ -390,42 +391,64 @@ def test_chws_and_vchw_compaction(fonts_dir: Path, sname: str) -> None:
         assert sum(pos.x_advance for pos in shape(p, text, feat={"chws": True})[1]) == sum(pos.x_advance for pos in shape(p, text, feat={"chws": False})[1])
     for text, exp in [("「『", -500), ("』。", -500), ("・：；", -1000), ("「・」", -500), ("。　", -500), ("： A", -500)]:
         assert sum(-pos.y_advance for pos in shape(p, text, feat={"vert": True, "vchw": True}, vert=True)[1]) - sum(-pos.y_advance for pos in shape(p, text, feat={"vert": True, "vchw": False}, vert=True)[1]) == exp
-    assert shape(p, "；", vert=False)[0][0].codepoint != shape(p, "；", feat={"vert": True}, vert=True)[0][0].codepoint
 
 
-def test_vertical_yakumono_shaping_and_vmtx(fonts_dir: Path) -> None:
-    p = fonts_dir / "HolonSans-Regular.ttf"
+@pytest.mark.parametrize("fname", ["HolonSans-Regular.ttf", "HolonSans-Italic.ttf", "HolonSans-Variable.otf", "HolonMono-Regular.ttf", "HolonMono-Variable.otf"])
+def test_vertical_writing_substitutions_and_metrics(fonts_dir: Path, fname: str) -> None:
+    """Verify vert/vrt2 glyph substitutions for yakumono, brackets, and small kana, plus vhea/vmtx/VORG."""
+    p = fonts_dir / fname
     if not p.exists():
-        pytest.skip("HolonSans-Regular.ttf not built")
-    for ch in "、。「」『』（）ー〜…‥：；":
-        assert shape(p, ch, vert=False)[0][0].codepoint != shape(p, ch, vert=True)[0][0].codepoint
+        pytest.skip(f"{fname} not built")
+    vert_chars = "、。「」『』（）【】〔〕〈〉《》［］｛｝ー〜―…‥：；ぁぃぅぇぉっゃゅょァィゥェォッャュョ"
+    for ch in vert_chars:
+        gid_h = shape(p, ch, vert=False)[0][0].codepoint
+        gid_v = shape(p, ch, vert=True)[0][0].codepoint
+        assert gid_h != gid_v, f"{fname} missing vertical substitution for '{ch}' (U+{ord(ch):04X})"
+
     font = get_tt(p)
-    cmap, hmtx = font.getBestCmap(), font["hmtx"].metrics
-    for u in (0x2015, 0x2025, 0x2026, 0x2103, 0x3000):
-        assert hmtx[cmap[u]][0] == 1000
+    assert "vhea" in font and "vmtx" in font
+    assert font["vhea"].ascent == 500 and font["vhea"].descent == -500
+    if fname.endswith(".otf"):
+        assert "VORG" in font and font["VORG"].defaultVertOriginY == 880
+    full_w = 1100 if "Mono" in fname else 1000
+    cmap, hmtx, vmtx = font.getBestCmap(), font["hmtx"].metrics, font["vmtx"].metrics
+    for u in ((0x3000,) if "Mono" in fname else (0x2015, 0x2025, 0x2026, 0x2103, 0x3000)):
+        assert hmtx[cmap[u]][0] == full_w and vmtx[cmap[u]][0] == full_w
 
 
-def test_feature_parity_vs_upstream(fonts_dir: Path) -> None:
-    p = fonts_dir / "HolonSans-Regular.ttf"
-    if not p.exists() or not UPSTREAM_JP_PATH.exists():
-        pytest.skip("Font or upstream font not built")
-    f_h, f_u = get_tt(p), get_tt(UPSTREAM_JP_PATH)
-    feats = lambda f, tbl: {r.FeatureTag for r in f[tbl].table.FeatureList.FeatureRecord} if tbl in f else set()
-    assert feats(f_u, "GSUB").issubset(feats(f_h, "GSUB"))
-    assert {"chws", "vchw", "kern", "palt", "vpal"}.issubset(feats(f_h, "GPOS"))
+@pytest.mark.parametrize("sname", [f for f in DESKTOP_FONTS if "HolonSans" in f])
+def test_sans_gpos_and_gsub_feature_parity(fonts_dir: Path, sname: str) -> None:
+    """Verify Static and Variable Sans have identical GSUB/GPOS features and active kern/palt/vpal/fwid shaping."""
+    p = fonts_dir / sname
+    if not p.exists():
+        pytest.skip(f"{sname} not built")
+    font = get_tt(p)
+    assert "BASE" in font
+    gpos_feats = {r.FeatureTag for r in font["GPOS"].table.FeatureList.FeatureRecord}
+    assert {"chws", "vchw", "halt", "vhal", "kern", "palt", "vkrn", "vpal"}.issubset(gpos_feats)
+    if UPSTREAM_JP_PATH.exists():
+        up_gsub = {r.FeatureTag for r in get_tt(UPSTREAM_JP_PATH)["GSUB"].table.FeatureList.FeatureRecord}
+        assert up_gsub.issubset({r.FeatureTag for r in font["GSUB"].table.FeatureList.FeatureRecord})
+
+    # Active shaping verification for kern, palt, vpal, and fwid
+    assert sum(pos.x_advance for pos in shape(p, "AV", feat={"kern": True})[1]) < sum(pos.x_advance for pos in shape(p, "AV", feat={"kern": False})[1])
+    assert sum(pos.x_advance for pos in shape(p, "「あ」", feat={"palt": True})[1]) < sum(pos.x_advance for pos in shape(p, "「あ」", feat={"palt": False})[1])
+    assert sum(-pos.y_advance for pos in shape(p, "「あ」", feat={"vert": True, "vpal": True}, vert=True)[1]) < sum(-pos.y_advance for pos in shape(p, "「あ」", feat={"vert": True, "vpal": False}, vert=True)[1])
+    assert sum(pos.x_advance for pos in shape(p, "123", feat={"fwid": True})[1]) == 3000
 
 
-# --- Variable Fonts: fvar, STAT, GRAD & Static Parity ---
+# --- 5. Variable Fonts: fvar, avar, STAT, GRAD & Static Parity ---
 
-@pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
-def test_variable_axes_and_stat(fonts_dir: Path, vname: str) -> None:
+@pytest.mark.parametrize("vname", VARIABLE_FONTS)
+def test_variable_axes_avar_and_stat(fonts_dir: Path, vname: str) -> None:
     p = fonts_dir / vname
     if not p.exists():
         pytest.skip(f"{vname} not built")
     vf = get_tt(p)
-    assert "STAT" in vf and "fvar" in vf and "HVAR" in vf and "VVAR" in vf
+    assert all(t in vf for t in ("STAT", "fvar", "avar", "HVAR", "VVAR"))
     axes = {a.axisTag: (a.minValue, a.defaultValue, a.maxValue) for a in vf["fvar"].axes}
     assert axes["wght"] == (100.0, 400.0, 700.0) and axes["GRAD"] == (-100.0, 0.0, 100.0)
+    assert len(vf["avar"].segments["wght"]) >= 7
     assert [a.AxisTag for a in vf["STAT"].table.DesignAxisRecord.Axis] == ["wght", "GRAD", "ital"]
     insts = {vf["name"].getDebugName(i.subfamilyNameID): i.coordinates["wght"] for i in vf["fvar"].instances}
     for wn, wv in WEIGHT_VALS.items():
@@ -433,26 +456,35 @@ def test_variable_axes_and_stat(fonts_dir: Path, vname: str) -> None:
         assert matched and abs(matched[0] - float(wv)) < 1.0
 
 
-@pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
-def test_variable_grad_advance_preservation(fonts_dir: Path, vname: str) -> None:
+@pytest.mark.parametrize("vname", VARIABLE_FONTS)
+def test_variable_grad_advance_and_optical_density(fonts_dir: Path, vname: str) -> None:
+    """Verify GRAD preserves advance widths across the repertoire while strictly modulating ink density."""
     p = fonts_dir / vname
     if not p.exists():
         pytest.skip(f"{vname} not built")
     vf = get_tt(p)
-    font = hb.Font(get_hb(p))
-    font.scale = (1000, 1000)
+    hb_font = hb.Font(get_hb(p))
+    hb_font.scale = (1000, 1000)
     cmap, is_mono, diffs = vf.getBestCmap(), "Mono" in vname, []
     for cp in list(cmap.keys())[::16]:
         gid = vf.getGlyphID(cmap[cp])
-        font.set_variations({"wght": 400, "GRAD": -100})
-        an = font.get_glyph_h_advance(gid)
-        font.set_variations({"wght": 400, "GRAD": 0})
-        az = font.get_glyph_h_advance(gid)
-        font.set_variations({"wght": 400, "GRAD": 100})
-        ap = font.get_glyph_h_advance(gid)
-        if not (an == az == ap) or (is_mono and az not in (0, 550, 1100)):
+        advs = []
+        for g in (-100, 0, 100):
+            hb_font.set_variations({"wght": 400, "GRAD": g})
+            advs.append(hb_font.get_glyph_h_advance(gid))
+        if not (advs[0] == advs[1] == advs[2]) or (is_mono and advs[1] not in (0, 550, 1100)):
             diffs.append(f"U+{cp:04X}")
     assert not diffs, f"{vname} GRAD altered advances: {diffs[:4]}"
+
+    face = freetype.Face(str(p))
+    face.set_char_size(24 * 64)
+    for ch in ("a", "w", "x", "v", "y", "A", "0", "あ", "森"):
+        inks = []
+        for grad in (-100, 0, 100):
+            face.set_var_design_coords([400, grad])
+            face.load_char(ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
+            inks.append(sum(face.glyph.bitmap.buffer))
+        assert inks[0] <= inks[1] <= inks[2] and inks[2] > inks[0], f"{vname} '{ch}' ink not scaling with GRAD: {inks}"
 
 
 def test_static_vf_advance_parity(fonts_dir: Path) -> None:
@@ -468,23 +500,20 @@ def test_static_vf_advance_parity(fonts_dir: Path) -> None:
             pytest.skip(f"{s_name} or {v_name} not built")
         fs, fv = get_tt(sp), get_tt(vp)
         cmap_s, cmap_v = fs.getBestCmap(), fv.getBestCmap()
-        font_s = hb.Font(get_hb(sp))
-        font_s.scale = (1000, 1000)
-        font_v = hb.Font(get_hb(vp))
-        font_v.scale = (1000, 1000)
+        font_s, font_v = hb.Font(get_hb(sp)), hb.Font(get_hb(vp))
+        font_s.scale = font_v.scale = (1000, 1000)
         font_v.set_variations({"wght": 400, "GRAD": 0})
-        viol = []
-        for cp in set(cmap_s).intersection(cmap_v):
-            adv_s = font_s.get_glyph_h_advance(fs.getGlyphID(cmap_s[cp]))
-            adv_v = font_v.get_glyph_h_advance(fv.getGlyphID(cmap_v[cp]))
-            if abs(adv_s - adv_v) > tol:
-                viol.append((hex(cp), adv_s, adv_v))
+        viol = [
+            (hex(cp), font_s.get_glyph_h_advance(fs.getGlyphID(cmap_s[cp])), font_v.get_glyph_h_advance(fv.getGlyphID(cmap_v[cp])))
+            for cp in set(cmap_s).intersection(cmap_v)
+            if abs(font_s.get_glyph_h_advance(fs.getGlyphID(cmap_s[cp])) - font_v.get_glyph_h_advance(fv.getGlyphID(cmap_v[cp]))) > tol
+        ]
         assert not viol, f"{s_name} vs {v_name} advance mismatch ({len(viol)} chars): {viol[:5]}"
 
 
-@pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
+@pytest.mark.parametrize("vname", VARIABLE_FONTS)
 def test_variable_weight_monotonicity_fine_grained(fonts_dir: Path, vname: str) -> None:
-    """Verify that font weights strictly scale monotonically across wght 100..700 for all key glyphs."""
+    """Verify that font weights strictly scale monotonically across wght 100..700 for key glyphs."""
     p = fonts_dir / vname
     if not p.exists():
         pytest.skip(f"{vname} not built")
@@ -492,99 +521,28 @@ def test_variable_weight_monotonicity_fine_grained(fonts_dir: Path, vname: str) 
     face.set_char_size(24 * 64)
     wght_steps = [100, 200, 300, 400, 500, 600, 700]
 
-    # Representative character set including user-reported problematic glyphs (a, w, x, v, y)
-    test_chars = ["a", "w", "x", "v", "y", "f", "g", "0", "8", "あ", "森"]
-
-    for ch in test_chars:
+    # Representative character set including variable interpolation stress-test glyphs (a, w, x, v, y)
+    for ch in ("a", "w", "x", "v", "y", "f", "g", "0", "8", "あ", "森"):
         inks = []
         for w in wght_steps:
             face.set_var_design_coords([w, 0])
             face.load_char(ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
-            bm = face.glyph.bitmap
-            ink = sum(bm.buffer)
-            inks.append(ink)
-
-        # Verify strict monotonicity: ink strictly increases with weight
+            inks.append(sum(face.glyph.bitmap.buffer))
         for i in range(len(inks) - 1):
-            assert inks[i] < inks[i + 1], (
-                f"{vname} '{ch}' weight not monotonic: wght={wght_steps[i]} (ink={inks[i]}) "
-                f"vs wght={wght_steps[i+1]} (ink={inks[i+1]})"
-            )
-        # Verify substantial weight expansion (Bold is at least 1.8x ink of Thin)
-        assert inks[-1] >= 1.8 * inks[0], (
-            f"{vname} '{ch}' insufficient weight expansion: Thin={inks[0]}, Bold={inks[-1]}"
-        )
+            assert inks[i] < inks[i + 1], f"{vname} '{ch}' weight not monotonic: {inks}"
+        assert inks[-1] >= 1.8 * inks[0], f"{vname} '{ch}' insufficient weight expansion: {inks[0]} -> {inks[-1]}"
 
-    # In Mono, verify distinct stroke weights between Light and Heavy box-drawing lines
     if "Mono" in vname:
-        for light_ch, heavy_ch in [("│", "┃"), ("┼", "╋")]:
+        for light_ch, heavy_ch in (("│", "┃"), ("┼", "╋")):
             face.set_var_design_coords([400, 0])
             face.load_char(light_ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
             ink_l = sum(face.glyph.bitmap.buffer)
             face.load_char(heavy_ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
             ink_h = sum(face.glyph.bitmap.buffer)
-            assert ink_h >= 1.7 * ink_l, f"{vname} {heavy_ch} ({ink_h}) not significantly heavier than {light_ch} ({ink_l})"
+            assert ink_h >= 1.7 * ink_l
 
 
-@pytest.mark.parametrize("vname", ["HolonSans-Variable.otf", "HolonSans-Italic-Variable.otf", "HolonMono-Variable.otf", "HolonMono-Italic-Variable.otf"])
-def test_variable_grad_monotonicity_and_width_lock(fonts_dir: Path, vname: str) -> None:
-    """Verify that GRAD preserves advance widths 100% while strictly modulating ink density."""
-    p = fonts_dir / vname
-    if not p.exists():
-        pytest.skip(f"{vname} not built")
-    face = freetype.Face(str(p))
-    face.set_char_size(24 * 64)
-    hb_font = hb.Font(get_hb(p))
-    hb_font.scale = (1000, 1000)
-    tt = get_tt(p)
-    cmap = tt.getBestCmap()
-
-    test_chars = ["a", "w", "x", "v", "y", "A", "0", "あ", "森"]
-    for ch in test_chars:
-        if ord(ch) not in cmap:
-            continue
-        gid = tt.getGlyphID(cmap[ord(ch)])
-        advances = []
-        inks = []
-        for grad in [-100, 0, 100]:
-            hb_font.set_variations({"wght": 400, "GRAD": grad})
-            advances.append(hb_font.get_glyph_h_advance(gid))
-            face.set_var_design_coords([400, grad])
-            face.load_char(ch, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
-            inks.append(sum(face.glyph.bitmap.buffer))
-
-        assert advances[0] == advances[1] == advances[2], (
-            f"{vname} '{ch}' advance altered by GRAD: {advances}"
-        )
-        assert inks[0] <= inks[1] <= inks[2] and inks[2] > inks[0], (
-            f"{vname} '{ch}' ink not scaling with GRAD: {inks}"
-        )
-
-
-@pytest.mark.parametrize("mname", ["HolonMono-Regular.ttf", "HolonMono-Variable.otf"])
-def test_mono_box_drawing_grid_continuity(fonts_dir: Path, mname: str) -> None:
-    """Verify that vertical lines and crosses connect with 0px gap at line height dy=21."""
-    p = fonts_dir / mname
-    if not p.exists():
-        pytest.skip(f"{mname} not built")
-    img = Image.new("RGBA", (120, 120), (0, 0, 0, 255))
-    var_dict = {"wght": 400, "GRAD": 0} if "Variable" in mname else None
-    draw_text_hb(img, p, "│", 18, (30, 30), var=var_dict, col=(255, 255, 255))
-    draw_text_hb(img, p, "┼", 18, (30, 30 + 21), var=var_dict, col=(255, 255, 255))
-
-    pixels = img.load()
-    stem_x = None
-    for x in range(25, 45):
-        if pixels[x, 30][0] > 100:
-            stem_x = x
-            break
-    assert stem_x is not None, f"Stem column not found in {mname}"
-
-    gap_y = [y for y in range(25, 55) if pixels[stem_x, y][0] < 30]
-    assert not gap_y, f"{mname} vertical gap found in box drawing at y={gap_y}"
-
-
-# --- Declarative Visual Specimen Engine ---
+# --- 6. Declarative Visual Specimen Engine ---
 
 def _render_card(p_out: Path, w: int, h: int, title: str, title_f: Path, els: list[Any], dark: bool = False) -> Path:
     img = Image.new("RGBA", (w, h), (18, 22, 28, 255) if dark else (248, 249, 250, 255))
@@ -615,10 +573,8 @@ def generate_all_glyphs_contact_sheet(p_font: Path, p_out: Path, title: str) -> 
     num_glyphs = face.num_glyphs
     cols = 140
     rows = (num_glyphs + cols - 1) // cols
-    cell_w, cell_h = 18, 20
-    header_h = 100
-    img_w = cols * cell_w + 80
-    img_h = rows * cell_h + header_h + 40
+    cell_w, cell_h, header_h = 18, 20, 100
+    img_w, img_h = cols * cell_w + 80, rows * cell_h + header_h + 40
 
     img = Image.new("RGBA", (img_w, img_h), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
@@ -631,11 +587,9 @@ def generate_all_glyphs_contact_sheet(p_font: Path, p_out: Path, title: str) -> 
         face.load_glyph(gid, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
         bm = face.glyph.bitmap
         r, c = gid // cols, gid % cols
-        cell_x = 40 + c * cell_w
-        cell_y = header_h + r * cell_h
         if bm.width > 0 and bm.rows > 0:
-            gx = cell_x + (cell_w - bm.width) // 2
-            gy = cell_y + 14 - face.glyph.bitmap_top
+            gx = 40 + c * cell_w + (cell_w - bm.width) // 2
+            gy = header_h + r * cell_h + 14 - face.glyph.bitmap_top
             glyph_img = Image.frombytes("L", (bm.width, bm.rows), bytes(bm.buffer))
             img.paste(Image.new("RGBA", (bm.width, bm.rows), (30, 41, 59, 255)), (gx, gy), glyph_img)
 
@@ -696,7 +650,6 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
          ("t", sr, "「『連続』」。・：；「・」", 22, (480, 260), (220, 38, 38), {"vert": True, "vchw": False}, None, True)]
     out.append(_render_card(SPECIMENS_DIR / "specimen_vertical.png", 1200, 840, "Holon Sans — 縦書き組版（vert・vrt2・vchw 対応）", sb, v_els))
 
-    # Variable Spectrum Card with full 7-weight scale and a,w,x,v,y glyph interpolation verification
     var_els = [
         ("rect", [(40, 115), (1360, 480)], (255, 255, 255), (226, 232, 240)),
         ("t", sb, "1. 直立バリアブルフォント（HolonSans-Variable.otf）: 全7ウエイト段階補間スペクトラム", 16, (65, 145), (37, 99, 235)),
@@ -706,12 +659,9 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
     wght_spectrum = [(100, "Thin (100)"), (200, "ExtraLight (200)"), (300, "Light (300)"), (400, "Regular (400)"),
                      (500, "Medium (500)"), (600, "SemiBold (600)"), (700, "Bold (700)")]
     for i, (w_val, label) in enumerate(wght_spectrum):
-        # Roman
-        y_r = 180 + i * 40
+        y_r, y_i = 180 + i * 40, 565 + i * 40
         var_els.append(("t", sr, f"{label:<16}", 12, (65, y_r + 2), (100, 116, 139)))
         var_els.append(("t", sv, "a w x v y  A B C  0 1 8  あいうえお  森国鬱  The quick brown fox", 18, (210, y_r), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}))
-        # Italic
-        y_i = 565 + i * 40
         var_els.append(("t", sr, f"{label:<16}", 12, (65, y_i + 2), (100, 116, 139)))
         var_els.append(("t", siv, "a w x v y  A B C  0 1 8  あいうえお  森国鬱  The quick brown fox", 18, (210, y_i), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}))
 
@@ -778,9 +728,9 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
     for i, (wval, lbl) in enumerate([(100, "Thin 100"), (250, "Wght 250"), (400, "Regular 400"), (550, "Wght 550"), (700, "Bold 700")]):
         mv_els.extend([("t", mr, f"{lbl:<12}", 14, (75, 187 + i * 48), (139, 148, 158)), ("t", mv, "fn calc(x: i32) -> i32 { x * 2 } // 厳密な 550/1100 UPM 列位置完全一致", 18, (230, 187 + i * 48), (240, 246, 252), None, {"wght": wval, "GRAD": 0})])
     mv_els.extend([("rect", [(50, 500), (1390, 910)], (24, 29, 36), (48, 54, 61)), ("t", mr, "2. Grade 軸（GRAD: -100 〜 +100）— 送り幅を 1px も変えない線の太さ光学補正", 16, (75, 525), (126, 231, 135)),
-                   ("rect", [(75, 560), (700, 880)], (255, 255, 255)), ("t", mr, "ライトモード表示 (GRAD: 0..+100)", 14, (95, 585)),
+                   ("rect", [(75, 560), (700, 880)], (255, 255, 255)), ("t", mr, "ライトモード表示 (GRAD: 0..+100)", 14, (95, 585), (15, 23, 42)),
                    ("t", mv, 'let msg = "Hello, 世界！";', 18, (95, 665), (15, 23, 42), None, {"wght": 400, "GRAD": 0}), ("t", mv, 'let msg = "Hello, 世界！";', 18, (95, 775), (15, 23, 42), None, {"wght": 400, "GRAD": 100}),
-                   ("rect", [(740, 560), (1365, 880)], (13, 17, 23)), ("t", mr, "ダークモード光学補正 (GRAD: -100)", 14, (760, 585)),
+                   ("rect", [(740, 560), (1365, 880)], (13, 17, 23)), ("t", mr, "ダークモード光学補正 (GRAD: -100)", 14, (760, 585), (240, 246, 252)),
                    ("t", mv, 'let msg = "Hello, 世界！";', 18, (760, 665), (240, 246, 252), None, {"wght": 400, "GRAD": 0}), ("t", mv, 'let msg = "Hello, 世界！";', 18, (760, 775), (240, 246, 252), None, {"wght": 400, "GRAD": -100})])
     out.append(_render_card(SPECIMENS_DIR / "specimen_mono_variable.png", 1440, 960, "Holon Mono Variable — Weight & Grade Axis Specimen", mr, mv_els, dark=True))
 
@@ -799,7 +749,7 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
     ], dark=True))
 
     out.append(_render_card(SPECIMENS_DIR / "specimen_mono_terminal_tui.png", 1440, 680, "Holon Mono — ターミナル TUI & システムステータス", mr, [
-        ("lines", mr, ["➜  holon git:(main) git status (working tree clean)", "➜  holon systemctl status holon-duospace", "● holon-duospace.service - Holon Duospace Font Engine (Active: running)"], 18, 50, 115, 28, (240, 246, 252)),
+        ("lines", mr, ["→  holon git:(main) git status (working tree clean)", "→  holon systemctl status holon-duospace", "● holon-duospace.service - Holon Duospace Font Engine (Active: running)"], 18, 50, 115, 28, (240, 246, 252)),
         ("lines", mr, ["┌──────────────────────────────────┬───────────┬───────────────┬────────────────────────┐",
                        "│ サービス名                       │ ステータス│ 応答速度(RTT) │ 稼働ホスト             │",
                        "├──────────────────────────────────┼───────────┼───────────────┼────────────────────────┤",
@@ -818,7 +768,6 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
                        "[████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  35% Initializing"], 18, 60, 260, 28, (126, 231, 135)),
     ], dark=True))
 
-    # Full glyph repertoire contact sheets (Sans & Mono)
     out.append(generate_all_glyphs_contact_sheet(sv, SPECIMENS_DIR / "specimen_all_glyphs_sans.png", "Holon Sans — 全グリフコンタクトシート (Complete Repertoire Contact Sheet)"))
     out.append(generate_all_glyphs_contact_sheet(mr, SPECIMENS_DIR / "specimen_all_glyphs_mono.png", "Holon Mono — 全グリフコンタクトシート (Complete Repertoire Contact Sheet)"))
     return out

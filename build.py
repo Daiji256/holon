@@ -16,9 +16,9 @@
 Features:
 - Automatic upstream download pinned by immutable Git commit hash & release tags with SHA-256 verification
 - Holon Sans: Dual-scale (Japanese CJK 0.97x, Latin/symbols 1.02x), 11.0° Italic, JIS X 4051 chws/vchw
-- Holon Sans Variable: 2-file Variable Fonts (Roman & Italic) with wght (100..700) and GRAD (-100..+100)
+- Holon Sans Variable: 2-file Variable Fonts (Roman & Italic) with wght (100..700), GRAD (-100..+100), avar, and full GPOS
 - Holon Mono: Strict 2:1 duospace (550 / 1100 UPM), 9.0° Italic, box-drawing alignment, terminal metrics
-- Subsetter & post format 3.0 optimization removing unreferenced glyphs and redundant tables
+- Subsetter, post 3.0, GDEF/STAT synthesis, and modal-advance glyph order clustering for compact hmtx/vmtx/HVAR/VVAR
 - Strict compliance with SIL OFL 1.1 metadata and naming requirements
 """
 
@@ -40,23 +40,15 @@ import cffsubr
 import ufo2ft
 import ufoLib2
 from east_asian_spacing import Builder, Config
-from fontTools.designspaceLib import (
-    AxisDescriptor,
-    DesignSpaceDocument,
-    InstanceDescriptor,
-    SourceDescriptor,
-)
+from fontTools.designspaceLib import AxisDescriptor, DesignSpaceDocument, InstanceDescriptor, SourceDescriptor
 from fontTools.otlLib.builder import buildStatTable, buildValue
 from fontTools.otlLib.optimize import compact as compact_otl
-from fontTools.pens.recordingPen import (
-    DecomposingRecordingPen,
-    DecomposingRecordingPointPen,
-)
+from fontTools.pens.recordingPen import DecomposingRecordingPen, DecomposingRecordingPointPen
 from fontTools.pens.transformPen import TransformPen, TransformPointPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.subset import Options as SubsetOptions
-from fontTools.subset import Subsetter
+from fontTools.subset import Options as SubsetOptions, Subsetter
 from fontTools.ttLib import TTFont, newTable
+from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
 from glyphsLib import GSFont, to_designspace
 from glyphsLib.builder.constants import ORIGINAL_WIDTH_KEY
@@ -91,26 +83,25 @@ MONO_JP_OFFSET_Y = JP_CENTER_Y * (1.0 - SCALE_JP)          # 12.0
 
 WEIGHTS = ["Thin", "ExtraLight", "Light", "Regular", "Text", "Medium", "SemiBold", "Bold"]
 WEIGHT_VALUES = {"Thin": 100, "ExtraLight": 200, "Light": 300, "Regular": 400, "Text": 450, "Medium": 500, "SemiBold": 600, "Bold": 700}
+WEIGHT_DESIGN_MAP = [(100, 100), (200, 165), (300, 275), (400, 360), (450, 450), (500, 525), (600, 620), (700, 700)]
+PANOSE_WEIGHTS = {"Thin": 2, "ExtraLight": 3, "Light": 4, "Regular": 5, "Text": 5, "Medium": 6, "SemiBold": 7, "Bold": 8}
 
 JP_FULLWIDTH_SYMBOLS = {0x2015, 0x2025, 0x2026, 0x2103}
 HW_SPACES = {0x2000, 0x2002, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A}
-
 MONO_SAFE_FEATURES = [
     "ccmp", "locl", "vert", "vrt2", "vkna", "hkna", "jp78", "jp83", "jp90",
-    "nlck", "trad", "hojo", "expt", "ruby", "fwid", "zero",
-    "ss01", "ss02", "ss03", "ss04",
+    "nlck", "trad", "hojo", "expt", "ruby", "fwid", "zero", "ss01", "ss02", "ss03", "ss04",
 ]
 
-OUTPUT_DIR = Path("fonts")
-TMP_DIR = Path("tmp")
+OUTPUT_DIR, TMP_DIR = Path("fonts"), Path("tmp")
 
 # --- Pinned Upstream Sources & SHA-256 Checksums ---
 
 UPSTREAM_PLEX_COMMIT = "71f558992315a12ca1f06a2215d57962a1992162"
 UPSTREAM_JP_LICENSE_REL = "plex-sans-jp/LICENSE.txt"
-UPSTREAM_JP_LICENSE_SHA256 = "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
 
 TTF_SHA256: dict[str, str] = {
+    UPSTREAM_JP_LICENSE_REL: "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
     # IBM Plex Sans (16 styles)
     "plex-sans/fonts/complete/ttf/IBMPlexSans-Thin.ttf": "d2fdd87b43039f5e05c7749b6b7937837d074bbf14af2d26dba09b67abf6aca1",
     "plex-sans/fonts/complete/ttf/IBMPlexSans-ThinItalic.ttf": "e1056650d0a4511372fa44f539a65c92e2ede7fe19ff5560c05e4490275c41a8",
@@ -178,8 +169,11 @@ CJK_MARKERS = (
     "hira", "kata", ".vert", ".hori", ".jp78", ".jp83", ".jp90", ".trad", ".nlck", ".hojo", ".expt", ".ruby",
     "Square", "leftjust", ".circled", ".paren", ".box", ".roundBox", ".blackBox", ".blackCircled", ".roundBlackBox", ".roundedBox",
     ".qartwidth", ".thirdwidths", "comb_kana", "T_E_L", "K_K", "s_e_c", "m_i_n", "watto", "sento", "peeji", "haitsu", "herutsu",
-    "koopo", "inchi", "yaado", "hoon", "blackScissors", ".full", ".prop",
+    "koopo", "inchi", "yaado", "hoon", "blackScissors", ".full", ".prop", "uni21F5",
 )
+
+_CHWS_PATCHED = False
+_BASE_JP_UFOS: list[ufoLib2.Font] | None = None
 
 
 # --- Upstream Downloading & Verification ---
@@ -187,7 +181,7 @@ CJK_MARKERS = (
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
+        while chunk := f.read(1 << 20):
             h.update(chunk)
     return h.hexdigest()
 
@@ -200,30 +194,27 @@ def _download_with_sha256(url: str, dest: Path, expected_sha256: str) -> None:
     with urllib.request.urlopen(req) as resp, open(tmp_dest, "wb") as out:
         while chunk := resp.read(1 << 20):
             out.write(chunk)
-    actual = _sha256_file(tmp_dest)
-    if actual != expected_sha256:
+    if (actual := _sha256_file(tmp_dest)) != expected_sha256:
         tmp_dest.unlink(missing_ok=True)
         raise RuntimeError(f"SHA-256 mismatch for {url}: expected {expected_sha256}, got {actual}")
     tmp_dest.replace(dest)
 
 
 def ensure_ttf_source(rel_path: str) -> Path:
-    """Return local path to an upstream TTF, downloading from pinned commit hash if needed."""
+    """Return local path to an upstream file, downloading from pinned commit hash if needed."""
     expected_sha = TTF_SHA256[rel_path]
     local_path = TMP_DIR / "plex" / "packages" / rel_path
-    if local_path.exists() and _sha256_file(local_path) == expected_sha:
-        return local_path
-    url = f"https://raw.githubusercontent.com/IBM/plex/{UPSTREAM_PLEX_COMMIT}/packages/{rel_path}"
-    _download_with_sha256(url, local_path, expected_sha)
+    if not local_path.exists() or _sha256_file(local_path) != expected_sha:
+        _download_with_sha256(f"https://raw.githubusercontent.com/IBM/plex/{UPSTREAM_PLEX_COMMIT}/packages/{rel_path}", local_path, expected_sha)
     return local_path
 
 
 def ensure_zip_source(key: str) -> Path:
-    """Ensure release zip source is downloaded and extracted, returning target file path."""
+    """Ensure release zip source is downloaded and atomically extracted, returning target file path."""
     info = ZIP_SOURCES[key]
     extract_dir = TMP_DIR / f"sources-{key}" / "unzipped"
-    target = extract_dir / info["target_rel"]
-    if target.exists():
+    target, sentinel = extract_dir / info["target_rel"], extract_dir / ".extracted"
+    if sentinel.exists() and target.exists():
         return target
     zip_path = TMP_DIR / f"sources-{key}" / "sources.zip"
     if not zip_path.exists() or _sha256_file(zip_path) != info["sha256"]:
@@ -231,30 +222,23 @@ def ensure_zip_source(key: str) -> Path:
     print(f"Extracting {zip_path} ({info['tag']})...")
     extract_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(extract_dir)
-    # Extract any nested .ufo.zip archives if present (e.g. sans-variable)
+        zf.extractall(extract_dir, members=[m for m in zf.namelist() if not m.startswith("__MACOSX/")])
     for ufo_zip in extract_dir.rglob("*.ufo.zip"):
-        ufo_dest = ufo_zip.parent / ufo_zip.stem
-        if not ufo_dest.exists():
+        if not ufo_zip.name.startswith("._") and not (ufo_dest := ufo_zip.parent / ufo_zip.stem).exists():
             with zipfile.ZipFile(ufo_zip, "r") as uzf:
                 uzf.extractall(ufo_dest)
+    sentinel.touch()
     return target
 
 
 def ensure_variable_sources(for_family: str = "sans") -> tuple[Path, Path]:
     """Ensure variable font master sources (.glyphs and Sans/Mono .ufo) exist in tmp/."""
-    glyphs_path = ensure_zip_source("sans-jp")
-    second_key = "mono-variable" if for_family == "mono" else "sans-variable"
-    latin_target = ensure_zip_source(second_key)
-    return glyphs_path, latin_target.parent
+    return ensure_zip_source("sans-jp"), ensure_zip_source("mono-variable" if for_family == "mono" else "sans-variable").parent
 
 
 def write_ofl_license(output_dir: Path) -> Path:
     """Ensure upstream LICENSE.txt is verified and write output_dir/OFL.txt verbatim with author copyright."""
-    lic_path = TMP_DIR / "plex" / "packages" / UPSTREAM_JP_LICENSE_REL
-    if not lic_path.exists() or _sha256_file(lic_path) != UPSTREAM_JP_LICENSE_SHA256:
-        url = f"https://raw.githubusercontent.com/IBM/plex/{UPSTREAM_PLEX_COMMIT}/packages/{UPSTREAM_JP_LICENSE_REL}"
-        _download_with_sha256(url, lic_path, UPSTREAM_JP_LICENSE_SHA256)
+    lic_path = ensure_ttf_source(UPSTREAM_JP_LICENSE_REL)
     output_dir.mkdir(parents=True, exist_ok=True)
     ofl_out = output_dir / "OFL.txt"
     ofl_out.write_bytes(b"Copyright 2026 Daiji Suzuki.\r\n" + lic_path.read_bytes())
@@ -267,7 +251,7 @@ def is_cjk_glyph(gname: str, u: int | None = None, box_is_latin: bool = False) -
     """Classify whether a glyph (encoded or unencoded) belongs to Japanese/CJK metrics."""
     if any(m in gname for m in CJK_MARKERS) or gname.startswith(("cid", "u1F", "u20", "u30", "uniFE1")):
         return True
-    if gname.endswith((".half", ".italic", ".rotat", ".sups", ".subs", ".numr", ".dnom", ".ordn", ".nut")):
+    if gname.endswith((".half", ".narrow", ".italic", ".rotat", ".sups", ".subs", ".numr", ".dnom", ".ordn", ".nut")):
         return False
     if u is not None:
         if (0x2000 <= u <= 0x200B) or u == 0x3000:
@@ -276,6 +260,8 @@ def is_cjk_glyph(gname: str, u: int | None = None, box_is_latin: bool = False) -
             return True
         if box_is_latin and (0x2500 <= u <= 0x25FF or 0xFB00 <= u <= 0xFB4F):
             return False
+        if 0x229E <= u <= 0x22A1:
+            return True
         return not (u < 0x02B0 or 0x0370 <= u <= 0x052F or 0x200C <= u <= 0x23FF)
     m = re.match(r"^uni([0-9A-Fa-f]{4})", gname)
     return is_cjk_glyph("", int(m.group(1), 16), box_is_latin=box_is_latin) if m else False
@@ -299,9 +285,7 @@ def _transform_ufo_glyph(glyph, matrix: tuple[float, ...]) -> None:
             p.x, p.y = a * p.x + c * p.y + e, b * p.x + d * p.y + f
 
 
-def _set_tt_glyph(
-    font: TTFont, name: str, glyph, h_adv: int, lsb: int | None = None, v_adv: int | None = None,
-) -> None:
+def _set_tt_glyph(font: TTFont, name: str, glyph, h_adv: int, lsb: int | None = None, v_adv: int | None = None) -> None:
     """Store glyph in glyf table and update hmtx and vmtx tables with standard tsb calculation."""
     font["glyf"][name] = glyph
     font["hmtx"][name] = (h_adv, glyph.xMin if lsb is None else lsb)
@@ -322,34 +306,27 @@ def _snap_tt_box_drawing_glyph(glyph, glyf_table, is_line: bool = False) -> None
         glyph.recalcBounds(glyf_table)
         return
 
-    new_coords, new_endPts, new_flags = [], [], []
-    s = 0
+    new_coords, new_endPts, new_flags, s = [], [], [], 0
     for e in endPts:
-        pts = [(x, 950 if y >= 800 else (-225 if y <= -250 else y)) for x, y in list(coords)[s:e+1]]
-        fls = list(flags)[s:e+1]
-        n = len(pts)
+        pts = [(x, 950 if y >= 800 else (-225 if y <= -250 else y)) for x, y in list(coords)[s:e + 1]]
+        fls = list(flags)[s:e + 1]
         c_pts, c_fls = [], []
-        for i in range(n):
-            x1, y1 = pts[i]
-            x2, y2 = pts[(i + 1) % n]
+        for i, (x1, y1) in enumerate(pts):
+            x2, y2 = pts[(i + 1) % len(pts)]
             c_pts.append((x1, y1))
             c_fls.append(fls[i])
             if x1 == x2 and (x1 < 0 or x1 > 550) and abs(y2 - y1) > 0:
-                tip_x = x1 - 18 if x1 < 0 else x1 + 18
-                c_pts.append((tip_x, (y1 + y2) // 2))
+                c_pts.append((x1 - 18 if x1 < 0 else x1 + 18, (y1 + y2) // 2))
                 c_fls.append(1)
             elif y1 == y2 and (y1 >= 900 or y1 <= -200) and abs(x2 - x1) > 0:
-                tip_y = 968 if y1 >= 900 else -243
-                c_pts.append(((x1 + x2) // 2, tip_y))
+                c_pts.append(((x1 + x2) // 2, 968 if y1 >= 900 else -243))
                 c_fls.append(1)
         new_coords.extend(c_pts)
         new_flags.extend(c_fls)
         new_endPts.append(len(new_coords) - 1)
         s = e + 1
 
-    glyph.coordinates = GlyphCoordinates(new_coords)
-    glyph.endPtsOfContours = new_endPts
-    glyph.flags = bytearray(new_flags)
+    glyph.coordinates, glyph.endPtsOfContours, glyph.flags = GlyphCoordinates(new_coords), new_endPts, bytearray(new_flags)
     glyph.recalcBounds(glyf_table)
 
 
@@ -358,8 +335,7 @@ def add_vertical_semicolon(font_jp: TTFont) -> None:
     glyf = font_jp["glyf"]
     if "uniFF1B" not in glyf or "uniFF1B.vert" in glyf:
         return
-    new_glyph = _transform_tt_glyph(font_jp.getGlyphSet(), "uniFF1B", (0.0, -1.0, 1.0, 0.0, 122.0, 878.0), glyf)
-    _set_tt_glyph(font_jp, "uniFF1B.vert", new_glyph, 1000)
+    _set_tt_glyph(font_jp, "uniFF1B.vert", _transform_tt_glyph(font_jp.getGlyphSet(), "uniFF1B", (0.0, -1.0, 1.0, 0.0, 122.0, 878.0), glyf), 1000)
 
     order = font_jp.getGlyphOrder()
     if "uniFF1B.vert" not in order:
@@ -379,32 +355,34 @@ def add_vertical_semicolon(font_jp: TTFont) -> None:
                                 st.mapping["uniFF1B"] = "uniFF1B.vert"
 
 
+def _cjk_compat_pairs(known_codes) -> dict[int, int]:
+    """Return {compat_cp: canonical_cp} for unmapped CJK Compatibility Ideographs (U+F900..U+FAFF)."""
+    return {
+        code: ord(d) for code in range(0xF900, 0xFB00)
+        if code not in known_codes and len(d := unicodedata.normalize("NFKD", chr(code))) == 1 and ord(d) in known_codes
+    }
+
+
 def add_cjk_compatibility_mappings(font_jp: TTFont) -> int:
     """Map missing CJK Compatibility Ideographs (U+F900..U+FAFF) to canonical unified ideographs."""
     cmap_jp = font_jp.getBestCmap()
-    new_map = {
-        code: cmap_jp[ord(d)] for code in range(0xF900, 0xFB00)
-        if code not in cmap_jp and len(d := unicodedata.normalize("NFKD", chr(code))) == 1 and ord(d) in cmap_jp
-    }
+    new_map = {c: cmap_jp[can] for c, can in _cjk_compat_pairs(cmap_jp).items()}
     for table in font_jp["cmap"].tables:
         if table.isUnicode():
             table.cmap.update(new_map)
     return len(new_map)
 
 
-def add_cjk_compatibility_mappings_to_ufos(ufos: list[ufoLib2.Font], ref_ufo: ufoLib2.Font | None = None) -> int:
+def add_cjk_compatibility_mappings_to_ufos(ufos: list[ufoLib2.Font]) -> int:
     """Map missing CJK Compatibility Ideographs (U+F900..U+FAFF) across UFO masters."""
-    ref = ref_ufo or ufos[0]
-    code_to_gname = {u: g.name for g in ref for u in (g.unicodes or [])}
-    added = 0
-    for code in range(0xF900, 0xFB00):
-        if code not in code_to_gname and len(d := unicodedata.normalize("NFKD", chr(code))) == 1 and ord(d) in code_to_gname:
-            cg = code_to_gname[ord(d)]
-            for ufo in ufos:
-                if cg in ufo:
-                    ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
-            added += 1
-    return added
+    code_to_gname = {u: g.name for g in ufos[0] for u in (g.unicodes or [])}
+    pairs = _cjk_compat_pairs(code_to_gname)
+    for code, can in pairs.items():
+        cg = code_to_gname[can]
+        for ufo in ufos:
+            if cg in ufo:
+                ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
+    return len(pairs)
 
 
 def _fix_u3000(font: TTFont, full_width: int = 1000) -> None:
@@ -421,8 +399,7 @@ def _apply_mono_metrics_and_cleanup(font: TTFont, clean_gsub: bool = True) -> No
     os2, hhea, head = font["OS/2"], font["hhea"], font["head"]
     os2.sTypoAscender = hhea.ascent = 950
     os2.sTypoDescender = hhea.descent = -225
-    os2.usWinAscent = max(950, head.yMax)
-    os2.usWinDescent = max(225, -head.yMin)
+    os2.usWinAscent, os2.usWinDescent = max(950, head.yMax), max(225, -head.yMin)
     os2.sTypoLineGap, hhea.lineGap, os2.panose.bProportion, font["post"].isFixedPitch = 0, 0, 9, 1
 
     for tag in ("GPOS", "BASE"):
@@ -439,10 +416,7 @@ def _apply_mono_metrics_and_cleanup(font: TTFont, clean_gsub: bool = True) -> No
                 for lidx in rec.Feature.LookupListIndex:
                     for st in gsub.LookupList.Lookup[lidx].SubTable:
                         if hasattr(st, "mapping"):
-                            st.mapping = {
-                                k: v for k, v in st.mapping.items()
-                                if not ("box" in k.lower() or "box" in v.lower() or "uni25" in k.lower() or "uni25" in v.lower())
-                            }
+                            st.mapping = {k: v for k, v in st.mapping.items() if not ("box" in k.lower() or "box" in v.lower() or "uni25" in k.lower() or "uni25" in v.lower())}
             elif rec.FeatureTag == "zero":
                 for lidx in rec.Feature.LookupListIndex:
                     for st in gsub.LookupList.Lookup[lidx].SubTable:
@@ -469,102 +443,115 @@ def _latin_metrics(ucode: int, orig_w: int, orig_lsb: int, is_mono: bool) -> tup
     return (0 if orig_w == 0 else round(orig_w * SCALE_SANS)), round(orig_lsb * SCALE_SANS)
 
 
-def _get_jp_glyph_transform(
-    family_name: str, gname: str, ucode: int | None, orig_w: int, slant: float,
-) -> tuple[tuple[float, ...], int]:
+def _get_jp_glyph_transform(family_name: str, gname: str, ucode: int | None, orig_w: int, slant: float) -> tuple[tuple[float, ...], int]:
     """Calculate affine transform matrix and target advance width for remaining Japanese glyphs."""
     if family_name == MONO_FAMILY:
-        is_hw = (orig_w == 500 or ucode in HW_SPACES or (orig_w < 850 and not is_cjk_glyph(gname, ucode, box_is_latin=True)))
+        is_hw = (
+            orig_w == 500 or gname.endswith((".half", ".narrow", ".rotat")) or ucode in HW_SPACES
+            or (orig_w != 1000 and not is_cjk_glyph(gname, ucode, box_is_latin=True))
+        )
         if is_hw:
-            sx = 1.0 if orig_w <= 500 else 500.0 / orig_w
-            sy = 1.0 if orig_w == 500 else SCALE_MONO_Y
+            sx, sy = (1.0 if orig_w <= 500 else 500.0 / orig_w), (1.0 if orig_w == 500 else SCALE_MONO_Y)
             return (sx, 0.0, sy * slant, sy, (HALF_WIDTH - orig_w * sx) / 2.0, 0.0), HALF_WIDTH
         return (SCALE_JP, 0.0, SCALE_JP * slant, SCALE_JP, MONO_JP_OFFSET_X + (MONO_JP_OFFSET_Y - JP_CENTER_Y) * slant, MONO_JP_OFFSET_Y), FULL_WIDTH
 
     if is_cjk_glyph(gname, ucode, box_is_latin=False):
-        dx = (orig_w / 2.0 if orig_w > 0 else JP_CENTER_X) * (1.0 - SCALE_JP)
-        dy = JP_CENTER_Y * (1.0 - SCALE_JP)
+        dx, dy = (orig_w / 2.0 if orig_w > 0 else JP_CENTER_X) * (1.0 - SCALE_JP), JP_CENTER_Y * (1.0 - SCALE_JP)
         return (SCALE_JP, 0.0, SCALE_JP * slant, SCALE_JP, dx + (dy - JP_CENTER_Y) * slant, dy), orig_w
 
-    target_w = orig_w if gname.endswith(".rotat") else round(orig_w * SCALE_SANS)
-    return (SCALE_SANS, 0.0, SCALE_SANS * slant, SCALE_SANS, 0.0, 0.0), target_w
+    return (SCALE_SANS, 0.0, SCALE_SANS * slant, SCALE_SANS, 0.0, 0.0), (orig_w if gname.endswith(".rotat") else round(orig_w * SCALE_SANS))
 
 
-# --- Style Names, Metadata, CHWS, Subsetter & Export ---
+# --- Style Names, Metadata, STAT/GDEF, CHWS, Subsetter & Export ---
 
 def style_names(weight: str, italic: bool) -> tuple[str, str, str]:
     """Return (style_name, ps_suffix, ribbon_subfamily) consistently across all families."""
     style_name = ("Italic" if weight == "Regular" else f"{weight} Italic") if italic else weight
-    ps_suffix = style_name.replace(" ", "")
     subfamily = ("Bold Italic" if italic else "Bold") if weight == "Bold" else ("Italic" if italic else "Regular")
-    return style_name, ps_suffix, subfamily
+    return style_name, style_name.replace(" ", ""), subfamily
+
+
+def build_family_stat_table(font: TTFont, italic: bool, is_variable: bool = False) -> None:
+    """Build OpenType 1.8+ STAT table for both Static and Variable fonts."""
+    stat_axes = [{"tag": "wght", "name": "Weight", "ordering": 0, "values": [
+        {"value": v, "name": n, **({"flags": 2, "linkedValue": 700} if v == 400 else {})}
+        for v, n in zip(WEIGHT_VALUES.values(), WEIGHTS)
+    ]}]
+    if is_variable:
+        stat_axes.append({"tag": "GRAD", "name": "Grade", "ordering": 1, "values": [{"value": 0, "name": "Normal", "flags": 2}]})
+    stat_axes.append({"tag": "ital", "name": "Italic", "ordering": len(stat_axes), "values": [
+        {"value": 1.0, "name": "Italic", "flags": 0} if italic else {"value": 0.0, "name": "Regular", "flags": 2, "linkedValue": 1.0}
+    ]})
+    buildStatTable(font, stat_axes)
+
+
+def ensure_gdef_table(font: TTFont) -> None:
+    """Ensure a valid GDEF table with GlyphClassDef exists (Base=1, Ligature=2, Mark=3)."""
+    if "GDEF" in font:
+        return
+    hmtx = font["hmtx"].metrics
+    gdef = newTable("GDEF")
+    gdef.table = otTables.GDEF()
+    gdef.table.Version = 0x00010000
+    gdef.table.GlyphClassDef = otTables.GlyphClassDef()
+    gdef.table.GlyphClassDef.classDefs = {
+        g: (3 if (hmtx[g][0] == 0 or "comb" in g) else (2 if g in ("fi", "fl", "f_f_i", "f_f_l") else 1))
+        for g in font.getGlyphOrder() if g != ".notdef"
+    }
+    gdef.table.AttachList = gdef.table.LigCaretList = gdef.table.MarkAttachClassDef = None
+    font["GDEF"] = gdef
 
 
 def apply_opentype_metadata(
     font: TTFont, family_name: str, weight: str, italic: bool, italic_angle: float, is_variable: bool = False,
 ) -> str:
-    """Update name, OS/2, head, hhea, vhea, and post tables conforming strictly to SIL OFL 1.1."""
-    family_compact = family_name.replace(" ", "")
-    is_mono = (family_name == MONO_FAMILY)
+    """Update name, OS/2, head, hhea, post, STAT, and GDEF tables conforming strictly to SIL OFL 1.1."""
+    family_compact, is_mono = family_name.replace(" ", ""), (family_name == MONO_FAMILY)
     if is_variable:
         style_name = "Italic" if italic else "Regular"
         ribbi_family, ribbi_subfamily = family_name, style_name
-        ps_suffix = "Italic-Variable" if italic else "Variable"
-        ps_name = f"{family_compact}-{'ItalicVariable' if italic else 'Variable'}"
+        ps_suffix, ps_name = ("Italic-Variable" if italic else "Variable"), f"{family_compact}-{'ItalicVariable' if italic else 'Variable'}"
     else:
         style_name, ps_suffix, ribbi_subfamily = style_names(weight, italic)
         ps_name = f"{family_compact}-{ps_suffix}"
-        if weight in ("Regular", "Bold"):
-            ribbi_family = family_name
-        else:
-            ribbi_family = f"{family_name} {weight}"
-            ribbi_subfamily = "Italic" if italic else "Regular"
+        ribbi_family = family_name if weight in ("Regular", "Bold") else f"{family_name} {weight}"
 
     name_records = {
         0: COPYRIGHT_MONO if is_mono else COPYRIGHT_SANS,
         1: ribbi_family, 2: ribbi_subfamily, 3: f"1.000;{VENDOR_ID};{ps_name}",
         4: f"{family_name} {style_name}", 5: "Version 1.000", 6: ps_name, 7: "", 8: "Holon Project",
-        9: DESIGNER_STRING,
-        11: VENDOR_URL, 12: VENDOR_URL, 13: LICENSE_DESCRIPTION, 14: LICENSE_URL,
-        16: family_name, 17: style_name,
-        20: "",
+        9: DESIGNER_STRING, 11: VENDOR_URL, 12: VENDOR_URL, 13: LICENSE_DESCRIPTION, 14: LICENSE_URL,
+        16: family_name, 17: style_name, 20: "",
         25: f"{family_compact}{'Italic' if italic else ''}" if is_variable else "",
     }
     name_table = font["name"]
-    for record in list(name_table.names):
-        if record.nameID in name_records:
-            name_table.names.remove(record)
+    name_table.names = [r for r in name_table.names if r.nameID not in name_records]
     for name_id, val in name_records.items():
         if val:
             name_table.addMultilingualName({"en": val}, nameID=name_id)
 
     os2 = font["OS/2"]
     os2.achVendID, os2.usWeightClass, os2.fsType = VENDOR_ID, WEIGHT_VALUES.get(weight, 400), 0
-    os2.fsSelection = (os2.fsSelection | 0x80) & ~0x40  # USE_TYPO_METRICS
-    if italic:
-        os2.fsSelection |= 0x01
-    elif weight != "Bold":
-        os2.fsSelection |= 0x40
-    os2.fsSelection = (os2.fsSelection | 0x20) if weight == "Bold" else (os2.fsSelection & ~0x20)
+    os2.panose.bWeight = PANOSE_WEIGHTS.get(weight, 5)
+    os2.fsSelection = 0x180 | (0x01 if italic else 0) | (0x20 if weight == "Bold" else (0x40 if weight == "Regular" and not italic else 0))
+    os2.recalcUnicodeRanges(font)
 
     head = font["head"]
     head.fontRevision, head.macStyle = 1.0, (0x02 if italic else 0) | (0x01 if weight == "Bold" else 0)
     font["post"].italicAngle = italic_angle if italic else 0.0
+    font["hhea"].caretSlopeRise, font["hhea"].caretSlopeRun = (1000, round(1000.0 * math.tan(math.radians(-italic_angle)))) if italic else (1, 0)
 
-    hhea = font["hhea"]
-    hhea.caretSlopeRise, hhea.caretSlopeRun = (1000, round(1000.0 * math.tan(math.radians(-italic_angle)))) if italic else (1, 0)
+    build_family_stat_table(font, italic=italic, is_variable=is_variable)
+    ensure_gdef_table(font)
     return ps_suffix
 
 
 def install_enhanced_chws() -> None:
     """Enhance east_asian_spacing GlyphSets with comprehensive JIS X 4051 yakumono rules."""
-    from east_asian_spacing.spacing import (
-        ChainContextPosBuilder,
-        ChainContextualRule,
-        Font,
-        GlyphSets,
-        PairPosBuilder,
-    )
+    global _CHWS_PATCHED
+    if _CHWS_PATCHED:
+        return
+    from east_asian_spacing.spacing import ChainContextPosBuilder, ChainContextualRule, Font, GlyphSets, PairPosBuilder
 
     def custom_build_chws_lookup(self, font: Font, lookups, pos: GlyphSets.PosValues):
         self.assert_font(font)
@@ -577,10 +564,8 @@ def install_enhanced_chws() -> None:
                 if g in glyph_order and g not in pos.middle:
                     pos.middle = pos.middle + (g,)
 
-        axis = "Y" if font.is_vertical else "X"
-        sign = 1 if font.is_vertical else -1
-        half_left_val = buildValue({f"{axis}Advance": -half_em})
-        quad_left_val = buildValue({f"{axis}Advance": -quad_em})
+        axis, sign = ("Y", 1) if font.is_vertical else ("X", -1)
+        half_left_val, quad_left_val = buildValue({f"{axis}Advance": -half_em}), buildValue({f"{axis}Advance": -quad_em})
         half_right_val = buildValue({f"{axis}Placement": sign * half_em, f"{axis}Advance": -half_em})
         quad_right_val = buildValue({f"{axis}Placement": sign * quad_em, f"{axis}Advance": -quad_em})
 
@@ -622,6 +607,7 @@ def install_enhanced_chws() -> None:
         return lookup_indices
 
     GlyphSets._build_chws_lookup = custom_build_chws_lookup
+    _CHWS_PATCHED = True
 
 
 async def apply_chws(input_path: Path, output_path: Path) -> None:
@@ -629,21 +615,68 @@ async def apply_chws(input_path: Path, output_path: Path) -> None:
     install_enhanced_chws()
     config = Config.default.clone()
     config.fullwidth_advance = 1000
-    builder = Builder(str(input_path), config=config)
-    res = await builder.build_and_save(output_path)
-    if not res:
+    if not await Builder(str(input_path), config=config).build_and_save(output_path):
         raise RuntimeError(f"Failed to inject chws into {input_path}")
+
+
+def _sync_otl_glyph_order(font: TTFont) -> None:
+    """Filter and sort GSUB/GPOS subtables so all Coverage and PairSet arrays match font.getGlyphOrder()."""
+    order = font.getGlyphOrder()
+    valid, gid_map = set(order), {g: i for i, g in enumerate(order)}
+    for tag in ("GSUB", "GPOS"):
+        if tag not in font:
+            continue
+        for l in font[tag].table.LookupList.Lookup:
+            new_sts = []
+            for st in l.SubTable:
+                s = st.ExtSubTable if hasattr(st, "ExtSubTable") else st
+                if getattr(s, "Format", None) == 1 and hasattr(s, "PairSet"):
+                    paired = []
+                    for g, ps in zip(s.Coverage.glyphs, s.PairSet):
+                        if g in valid:
+                            ps.PairValueRecord = sorted([r for r in ps.PairValueRecord if r.SecondGlyph in valid], key=lambda r: gid_map[r.SecondGlyph])
+                            if ps.PairValueRecord:
+                                paired.append((g, ps))
+                    if not paired:
+                        continue
+                    paired.sort(key=lambda x: gid_map[x[0]])
+                    s.Coverage.glyphs, s.PairSet = [x[0] for x in paired], [x[1] for x in paired]
+                elif getattr(s, "Format", None) == 2 and hasattr(s, "ClassDef1"):
+                    s.Coverage.glyphs = sorted([g for g in s.Coverage.glyphs if g in valid], key=gid_map.__getitem__)
+                    if not s.Coverage.glyphs:
+                        continue
+                    s.ClassDef1.classDefs = {g: c for g, c in s.ClassDef1.classDefs.items() if g in valid}
+                    s.ClassDef2.classDefs = {g: c for g, c in s.ClassDef2.classDefs.items() if g in valid}
+                elif hasattr(s, "Coverage") and hasattr(s.Coverage, "glyphs"):
+                    s.Coverage.glyphs = sorted([g for g in s.Coverage.glyphs if g in valid], key=gid_map.__getitem__)
+                    if not s.Coverage.glyphs:
+                        continue
+                for attr in ("BacktrackCoverage", "InputCoverage", "LookAheadCoverage"):
+                    for cov in getattr(s, attr, ()):
+                        cov.glyphs.sort(key=gid_map.__getitem__)
+                new_sts.append(st)
+            l.SubTable, l.SubTableCount = new_sts, len(new_sts)
+
+
+def _cluster_modal_glyph_order(font: TTFont, full_width: int) -> None:
+    """Cluster glyphs with modal (full_width, full_width) advances at the end of glyphOrder to compact hmtx & vmtx."""
+    if "CFF2" in font:
+        return
+    for tag in list(font.keys()):
+        _ = font[tag]
+    hmtx, vmtx = font["hmtx"].metrics, (font["vmtx"].metrics if "vmtx" in font else {})
+    font.setGlyphOrder(sorted(
+        font.getGlyphOrder(),
+        key=lambda g: (g != ".notdef", hmtx[g][0] == full_width and vmtx.get(g, (full_width, 0))[0] == full_width),
+    ))
+    _sync_otl_glyph_order(font)
 
 
 def _remove_empty_pua_from_cmap(font: TTFont) -> None:
     """Remove unoutlined PUA codepoints (e.g., U+F860..U+F87F) from cmap tables."""
     if "cmap" not in font:
         return
-    if "glyf" in font:
-        glyf = font["glyf"]
-        is_empty = lambda g: g in glyf and glyf[g].numberOfContours == 0
-    else:
-        is_empty = lambda _: False
+    is_empty = (lambda g: g in font["glyf"] and font["glyf"][g].numberOfContours == 0) if "glyf" in font else (lambda _: False)
     for table in font["cmap"].tables:
         if table.isUnicode():
             for cp in [cp for cp, g in table.cmap.items() if 0xE000 <= cp <= 0xF8FF and (0xF860 <= cp <= 0xF87F or is_empty(g))]:
@@ -651,15 +684,13 @@ def _remove_empty_pua_from_cmap(font: TTFont) -> None:
 
 
 def subset_and_export(
-    font_path: Path,
-    out_desktop: Path,
-    out_woff2: Path,
-    layout_features: list[str] | None = None,
-    output_dir: Path = OUTPUT_DIR,
+    font_path: Path, out_desktop: Path, out_woff2: Path,
+    layout_features: list[str] | None = None, output_dir: Path = OUTPUT_DIR,
 ) -> None:
     """Remove unreferenced glyphs, drop obsolete tables, set post 3.0, and export desktop + WOFF2."""
     font = TTFont(font_path)
     _remove_empty_pua_from_cmap(font)
+
     opts = SubsetOptions()
     opts.layout_features = layout_features if layout_features is not None else ["*"]
     opts.name_IDs, opts.name_languages = ["*"], ["*"]
@@ -681,13 +712,10 @@ def subset_and_export(
         font["gasp"] = gasp
         if "glyf" in font:
             glyf = font["glyf"]
-            outlined = [glyf[g] for g in font.getGlyphOrder() if getattr(glyf[g], "numberOfContours", 0) != 0]
-            if outlined:
-                font["head"].yMax = max(g.yMax for g in outlined)
-                font["head"].yMin = min(g.yMin for g in outlined)
+            if outlined := [glyf[g] for g in font.getGlyphOrder() if getattr(glyf[g], "numberOfContours", 0) != 0]:
+                font["head"].yMax, font["head"].yMin = max(g.yMax for g in outlined), min(g.yMin for g in outlined)
         if "HolonMono" in out_desktop.name:
-            font["OS/2"].usWinAscent = max(950, font["head"].yMax)
-            font["OS/2"].usWinDescent = max(225, -font["head"].yMin)
+            font["OS/2"].usWinAscent, font["OS/2"].usWinDescent = max(950, font["head"].yMax), max(225, -font["head"].yMin)
 
     if "GPOS" in font:
         compact_otl(font, level=7)
@@ -712,25 +740,22 @@ def _export_and_chws(
     is_mono: bool, output_dir: Path, label: str = "",
 ) -> None:
     """Save intermediate TTF/OTF, run CHWS if proportional, and export subsetted binaries."""
-    font.save(inter_path)
-    if is_mono:
-        subset_and_export(inter_path, out_font, out_woff2, layout_features=MONO_SAFE_FEATURES, output_dir=output_dir)
-        inter_path.unlink(missing_ok=True)
-    else:
+    _cluster_modal_glyph_order(font, FULL_WIDTH if is_mono else 1000)
+    src_path = inter_path
+    font.save(src_path)
+    if not is_mono:
         chws_path = inter_path.with_suffix(".chws" + inter_path.suffix)
         if label:
             print(f"Injecting chws / vchw contextual spacing ({label})...")
-        asyncio.run(apply_chws(inter_path, chws_path))
-        inter_path.unlink(missing_ok=True)
-        subset_and_export(chws_path, out_font, out_woff2, layout_features=["*"], output_dir=output_dir)
-        chws_path.unlink(missing_ok=True)
+        asyncio.run(apply_chws(src_path, chws_path))
+        src_path.unlink(missing_ok=True)
+        src_path = chws_path
+    subset_and_export(src_path, out_font, out_woff2, layout_features=MONO_SAFE_FEATURES if is_mono else ["*"], output_dir=output_dir)
 
 
 # --- Static Font Builders (Sans & Mono) ---
 
-def build_static_style(
-    family_name: str, weight: str, italic: bool = False, output_dir: Path = OUTPUT_DIR,
-) -> Path:
+def build_static_style(family_name: str, weight: str, italic: bool = False, output_dir: Path = OUTPUT_DIR) -> Path:
     """Build a static style for Holon Sans or Holon Mono."""
     is_mono = (family_name == MONO_FAMILY)
     style_name, _, _ = style_names(weight, italic)
@@ -757,14 +782,11 @@ def build_static_style(
     def merge_latin(gname: str, ucode: int = 0) -> None:
         if gname in replaced_glyphs or gname not in font_latin["glyf"]:
             return
-        mat = latin_matrix
-        if is_mono and _is_eaw_wide(ucode):
-            mat = (SCALE_MONO_X, 0.0, 0.0, SCALE_MONO_Y, (FULL_WIDTH - HALF_WIDTH) / 2.0, 0.0)
+        mat = (SCALE_MONO_X, 0.0, 0.0, SCALE_MONO_Y, (FULL_WIDTH - HALF_WIDTH) / 2.0, 0.0) if (is_mono and _is_eaw_wide(ucode)) else latin_matrix
         scaled = _transform_tt_glyph(glyph_set_latin, gname, mat, glyf_jp)
         orig_w, orig_lsb = font_latin["hmtx"][gname]
         if is_mono and (0x2500 <= ucode <= 0x259F or "bxd" in gname or "block" in gname):
-            is_line = (0x2500 <= ucode <= 0x257F)
-            _snap_tt_box_drawing_glyph(scaled, glyf_jp, is_line=is_line)
+            _snap_tt_box_drawing_glyph(scaled, glyf_jp, is_line=(0x2500 <= ucode <= 0x257F))
         new_w, new_lsb = _latin_metrics(ucode, orig_w, orig_lsb, is_mono)
         if is_mono and (0x2500 <= ucode <= 0x257F):
             new_lsb = scaled.xMin
@@ -779,7 +801,8 @@ def build_static_style(
             merge_latin(gname, ucode)
             new_cmap_entries[ucode] = gname
 
-    for alt_g in (("zero.alt01", "zero.tosf.alt01", "a.alt01", "g.alt01") if is_mono else ("zero.alt01", "a.alt01", "g.alt01", "fi", "fl")):
+    extras_list = ("zero.alt01", "zero.tosf.alt01", "a.alt01", "g.alt01") if is_mono else ("zero.alt01", "a.alt01", "g.alt01", "fi", "fl")
+    for alt_g in extras_list:
         merge_latin(alt_g)
 
     slant = math.tan(math.radians(-italic_angle)) if italic else 0.0
@@ -789,20 +812,17 @@ def build_static_style(
         orig_glyph, (orig_w, _) = glyf_jp[gname], hmtx_jp[gname]
         if orig_w == 0 and is_mono:
             continue
-        u = rev_cmap_jp.get(gname)
-        mat, new_w = _get_jp_glyph_transform(family_name, gname, u, orig_w, slant)
+        mat, new_w = _get_jp_glyph_transform(family_name, gname, rev_cmap_jp.get(gname), orig_w, slant)
 
         if orig_glyph.numberOfContours == 0:
             if is_mono:
                 _set_tt_glyph(font_jp, gname, orig_glyph, new_w, lsb=0, v_adv=FULL_WIDTH)
             continue
 
-        new_glyph = _transform_tt_glyph(glyph_set_jp, gname, mat, glyf_jp)
-        _set_tt_glyph(font_jp, gname, new_glyph, new_w, v_adv=full_width if is_mono else None)
+        _set_tt_glyph(font_jp, gname, _transform_tt_glyph(glyph_set_jp, gname, mat, glyf_jp), new_w, v_adv=full_width if is_mono else None)
 
     order = font_jp.getGlyphOrder()
-    extras = list(new_cmap_entries.values()) + (["zero.alt01", "zero.tosf.alt01", "a.alt01", "g.alt01"] if is_mono else [])
-    new_order = order + [g for g in extras if g in glyf_jp and g not in order]
+    new_order = order + [g for g in [*new_cmap_entries.values(), *extras_list] if g in glyf_jp and g not in order]
     font_jp.setGlyphOrder(new_order)
     font_jp["maxp"].numGlyphs = len(new_order)
     for table in font_jp["cmap"].tables:
@@ -821,14 +841,6 @@ def build_static_style(
 
     _export_and_chws(font_jp, inter_path, final_ttf, final_woff2, is_mono, output_dir)
     return final_ttf
-
-
-def build_sans_style(weight: str, italic: bool = False, output_dir: Path = OUTPUT_DIR) -> Path:
-    return build_static_style(SANS_FAMILY, weight, italic=italic, output_dir=output_dir)
-
-
-def build_mono_style(weight: str, italic: bool = False, output_dir: Path = OUTPUT_DIR) -> Path:
-    return build_static_style(MONO_FAMILY, weight, italic=italic, output_dir=output_dir)
 
 
 # --- Variable Font Builders & Helpers ---
@@ -855,14 +867,16 @@ def _apply_ufo_cjk_transform(ufo: ufoLib2.Font, family_name: str, italic: bool =
     """Apply proportional dual-scale or strict duospace transform to all glyphs in a UFO master."""
     is_mono = (family_name == MONO_FAMILY)
     slant = math.tan(math.radians(-MONO_ITALIC_ANGLE if is_mono else -SANS_ITALIC_ANGLE)) if italic else 0.0
-    sans_dy_cjk = JP_CENTER_Y * (1.0 - SCALE_JP)
     ps_names = ufo.lib.get("public.postscriptNames", {})
 
     for g in ufo:
         unicodes = set(g.unicodes or ([] if g.unicode is None else [g.unicode]))
         u_primary = max(unicodes) if unicodes else None
-        ps_name = ps_names.get(g.name, g.name)
         orig_w = g.width
+        if is_mono:
+            g.height, g.verticalOrigin = FULL_WIDTH, 880
+        elif g.height == 1000:
+            g.verticalOrigin = 880
 
         if unicodes & {0x3000, 0x2003, 0x2001}:
             g.width = FULL_WIDTH if is_mono else 1000
@@ -870,29 +884,12 @@ def _apply_ufo_cjk_transform(ufo: ufoLib2.Font, family_name: str, italic: bool =
         if unicodes & {0x2000, 0x2002}:
             g.width = HALF_WIDTH if is_mono else 500
             continue
+        if is_mono and orig_w == 0:
+            continue
 
-        if is_mono:
-            if orig_w == 0:
-                continue
-            is_hw = (orig_w == 500 or u_primary in HW_SPACES or (orig_w < 850 and not is_cjk_glyph(ps_name, u_primary, box_is_latin=True)))
-            if is_hw:
-                sx = 1.0 if orig_w <= 500 else 500.0 / orig_w
-                sy = 1.0 if orig_w == 500 else SCALE_MONO_Y
-                _transform_ufo_glyph(g, (sx, 0.0, sy * slant, sy, (HALF_WIDTH - orig_w * sx) / 2.0, 0.0))
-                g.width = HALF_WIDTH
-            else:
-                mat = (SCALE_JP, 0.0, SCALE_JP * slant, SCALE_JP, MONO_JP_OFFSET_X + (MONO_JP_OFFSET_Y - JP_CENTER_Y) * slant, MONO_JP_OFFSET_Y)
-                _transform_ufo_glyph(g, mat)
-                g.width = FULL_WIDTH
-        else:
-            if is_cjk_glyph(ps_name, u_primary, box_is_latin=False) or ps_name == "uni21F5":
-                dx = (orig_w / 2.0 if orig_w > 0 else JP_CENTER_X) * (1.0 - SCALE_JP)
-                mat = (SCALE_JP, 0.0, SCALE_JP * slant, SCALE_JP, dx + (sans_dy_cjk - JP_CENTER_Y) * slant, sans_dy_cjk)
-                _transform_ufo_glyph(g, mat)
-            else:
-                _transform_ufo_glyph(g, (SCALE_SANS, 0.0, SCALE_SANS * slant, SCALE_SANS, 0.0, 0.0))
-                if not ps_name.endswith(".rotat"):
-                    g.width = round(orig_w * SCALE_SANS)
+        mat, target_w = _get_jp_glyph_transform(family_name, ps_names.get(g.name, g.name), u_primary, orig_w, slant)
+        _transform_ufo_glyph(g, mat)
+        g.width = target_w
 
 
 def decompose_ufo(ufo: ufoLib2.Font) -> None:
@@ -906,40 +903,37 @@ def decompose_ufo(ufo: ufoLib2.Font) -> None:
             rpen.replay(g.getPointPen())
 
 
-def _merge_sans_variable_latin(
-    ufo_thin: ufoLib2.Font, ufo_reg: ufoLib2.Font, ufo_bold: ufoLib2.Font,
-    sans_masters_dir: Path, italic: bool = False,
-) -> int:
-    """Merge Latin/symbol glyphs from IBM Plex Sans masters into Japanese masters at 1.02x scale."""
+def _merge_variable_latin(dst_ufos: list[ufoLib2.Font], latin_masters_dir: Path, is_mono: bool, italic: bool = False) -> int:
+    """Merge Latin/symbol glyphs from IBM Plex Sans/Mono masters into Japanese UFO masters."""
+    prefix = "IBM Plex Mono Var" if is_mono else "IBM Plex Sans Var"
     stems = ("Thin Italic", "Italic", "Bold Italic") if italic else ("Thin", "Regular", "Bold")
-    src_ufos = tuple(ufoLib2.Font.open(sans_masters_dir / f"IBM Plex Sans Var-{stem}.ufo") for stem in stems)
+    src_ufos = tuple(ufoLib2.Font.open(latin_masters_dir / f"{prefix}-{stem}.ufo") for stem in stems)
     for s_ufo in src_ufos:
         decompose_ufo(s_ufo)
-    dst_ufos = (ufo_thin, ufo_reg, ufo_bold)
-
     for u in dst_ufos:
         u.kerning.clear()
 
+    ufo_reg = dst_ufos[1]
     u_to_jp_gname = {u: g.name for g in ufo_reg for u in (g.unicodes or [])}
     ps_to_jp_gname = {v: k for k, v in ufo_reg.lib.get("public.postscriptNames", {}).items()}
-    all_sans_unicodes = {u for g in src_ufos[1] for u in (g.unicodes or ([g.unicode] if g.unicode is not None else []))}
-    pt_mat = (SCALE_SANS, 0.0, 0.0, SCALE_SANS, 0.0, 0.0)
+    all_src_unicodes = {u for g in src_ufos[1] for u in (g.unicodes or ([g.unicode] if g.unicode is not None else []))}
+    full_v_adv = FULL_WIDTH if is_mono else 1000
 
     added = 0
     for g_r in src_ufos[1]:
-        u = g_r.unicode
-        unicodes = set(g_r.unicodes or ([] if u is None else [u]))
-        if not unicodes and g_r.name not in ("zero.alt01", "a.alt01", "g.alt01", "fi", "fl"):
-            continue
-        if 0x3000 in unicodes or (unicodes & JP_FULLWIDTH_SYMBOLS):
-            continue
-        if any(uc < 0x0020 or (0xE000 <= uc < 0xF900) for uc in unicodes):
+        unicodes = set(g_r.unicodes or ([] if g_r.unicode is None else [g_r.unicode]))
+        if not is_mono:
+            if not unicodes and g_r.name not in ("zero.alt01", "a.alt01", "g.alt01", "fi", "fl"):
+                continue
+            if unicodes & JP_FULLWIDTH_SYMBOLS or any(uc < 0x0020 or (0xE000 <= uc < 0xF900) for uc in unicodes):
+                continue
+        if 0x3000 in unicodes:
             continue
 
         for prev_name in {g_r.name, ps_to_jp_gname.get(g_r.name)}:
             if prev_name and prev_name in ufo_reg:
                 for extra_u in (ufo_reg[prev_name].unicodes or []):
-                    if extra_u not in all_sans_unicodes and extra_u != 0x3000 and extra_u not in JP_FULLWIDTH_SYMBOLS and extra_u != 0x02C9:
+                    if extra_u not in all_src_unicodes and extra_u != 0x3000 and (is_mono or (extra_u not in JP_FULLWIDTH_SYMBOLS and extra_u != 0x02C9)):
                         unicodes.add(extra_u)
 
         for uc in unicodes:
@@ -954,76 +948,42 @@ def _merge_sans_variable_latin(
             if (old_jp := ps_to_jp_gname.get(g_r.name)) and old_jp != g_r.name:
                 ps_map.pop(old_jp, None)
 
+        is_box = is_mono and (bool(unicodes & set(range(0x2500, 0x25A0))) or "bxd" in g_r.name or "block" in g_r.name)
+        is_wide = is_mono and (bool(unicodes & {0x2003}) or any(_is_eaw_wide(u) for u in unicodes))
+        dx = (FULL_WIDTH - HALF_WIDTH) / 2.0 if (is_mono and any(_is_eaw_wide(u) for u in unicodes)) else 0.0
         fixed_w = 1000 if (unicodes & {0x2001, 0x2003}) else (500 if (unicodes & {0x2000, 0x2002}) else None)
         sorted_u = sorted(unicodes)
+
         for dst_u, src_u in zip(dst_ufos, src_ufos):
             src_g = src_u[g_r.name]
             ng = dst_u.newGlyph(g_r.name) if g_r.name not in dst_u else dst_u[g_r.name]
             ng.clear()
             ng.unicodes = sorted_u
-            ng.width = fixed_w if fixed_w is not None else (round(src_g.width * SCALE_SANS) if not g_r.name.endswith(".rotat") else src_g.width)
-            ng.height = 1000
-            ng.verticalOrigin = 880
-            src_g.drawPoints(TransformPointPen(ng.getPointPen(), pt_mat))
+            ng.height, ng.verticalOrigin = full_v_adv, 880
+            if is_mono:
+                ng.width = 0 if src_g.width == 0 else (FULL_WIDTH if is_wide else HALF_WIDTH)
+                src_g.drawPoints(ng.getPointPen())
+                for c in ng.contours:
+                    for p in c.points:
+                        p.x = p.x * SCALE_MONO_X + dx
+                        p.y = 950.0 if (is_box and p.y >= 800) else (-225.0 if (is_box and p.y <= -250) else p.y * SCALE_MONO_Y)
+            else:
+                ng.width = fixed_w if fixed_w is not None else (round(src_g.width * SCALE_SANS) if not g_r.name.endswith(".rotat") else src_g.width)
+                src_g.drawPoints(TransformPointPen(ng.getPointPen(), (SCALE_SANS, 0.0, 0.0, SCALE_SANS, 0.0, 0.0)))
             if "public.glyphOrder" in dst_u.lib and g_r.name not in dst_u.lib["public.glyphOrder"]:
                 dst_u.lib["public.glyphOrder"].append(g_r.name)
         added += 1
 
-    # Ensure U+02C9 (MODIFIER LETTER MACRON) has 0 advance width matching static TTF
-    for dst_u in dst_ufos:
-        if "macroncomb" in dst_u:
-            dst_u["macroncomb"].width = 0
-            if 0x02C9 not in (dst_u["macroncomb"].unicodes or []):
-                dst_u["macroncomb"].unicodes = list(dst_u["macroncomb"].unicodes or []) + [0x02C9]
-        for g in dst_u:
-            if g.name != "macroncomb" and 0x02C9 in (g.unicodes or []):
-                g.unicodes = [x for x in g.unicodes if x != 0x02C9]
+    if not is_mono:
+        for dst_u in dst_ufos:
+            if "macroncomb" in dst_u:
+                dst_u["macroncomb"].width = 0
+                if 0x02C9 not in (dst_u["macroncomb"].unicodes or []):
+                    dst_u["macroncomb"].unicodes = list(dst_u["macroncomb"].unicodes or []) + [0x02C9]
+            for g in dst_u:
+                if g.name != "macroncomb" and 0x02C9 in (g.unicodes or []):
+                    g.unicodes = [x for x in g.unicodes if x != 0x02C9]
     return added
-
-
-def _merge_mono_variable_latin(ufo_jp: ufoLib2.Font, ufo_mono: ufoLib2.Font) -> None:
-    """Merge IBM Plex Mono Var Latin/symbol/box-drawing glyphs into Japanese UFO master."""
-    ufo_jp.kerning.clear()
-    ufo_mono.kerning.clear()
-    decompose_ufo(ufo_mono)
-    u_to_jp_gname = {u: g.name for g in ufo_jp for u in (g.unicodes or [])}
-    ps_map = ufo_jp.lib.get("public.postscriptNames", {})
-    ps_to_jp_gname = {v: k for k, v in ps_map.items()}
-    all_mono_unicodes = {u for g in ufo_mono for u in (g.unicodes or ([g.unicode] if g.unicode is not None else []))}
-
-    for g_mono in ufo_mono:
-        unicodes = set(g_mono.unicodes or ([] if g_mono.unicode is None else [g_mono.unicode]))
-        if 0x3000 in unicodes:
-            continue
-        for prev_name in {g_mono.name, ps_to_jp_gname.get(g_mono.name)}:
-            if prev_name and prev_name in ufo_jp:
-                for extra_u in (ufo_jp[prev_name].unicodes or []):
-                    if extra_u not in all_mono_unicodes and extra_u != 0x3000:
-                        unicodes.add(extra_u)
-
-        for u in unicodes:
-            if u in u_to_jp_gname and (old_g := u_to_jp_gname[u]) != g_mono.name and old_g in ufo_jp:
-                ufo_jp[old_g].unicodes = [x for x in (ufo_jp[old_g].unicodes or []) if x != u]
-
-        ps_map.pop(g_mono.name, None)
-        if (old_jp := ps_to_jp_gname.get(g_mono.name)) and old_jp != g_mono.name:
-            ps_map.pop(old_jp, None)
-
-        is_box = bool(unicodes & set(range(0x2500, 0x25A0))) or "bxd" in g_mono.name or "block" in g_mono.name
-        is_wide = bool(unicodes & {0x2003}) or any(_is_eaw_wide(u) for u in unicodes)
-        dx = (FULL_WIDTH - HALF_WIDTH) / 2.0 if any(_is_eaw_wide(u) for u in unicodes) else 0.0
-        ng = copy.deepcopy(g_mono)
-        ng.unicodes = sorted(unicodes)
-        if ng.width > 0:
-            ng.width = FULL_WIDTH if is_wide else HALF_WIDTH
-        for c in ng.contours:
-            for p in c.points:
-                px = p.x * SCALE_MONO_X + dx
-                py = 950.0 if (is_box and p.y >= 800) else (-225.0 if (is_box and p.y <= -250) else p.y * SCALE_MONO_Y)
-                p.x, p.y = px, py
-        ufo_jp[ng.name] = ng
-        if "public.glyphOrder" in ufo_jp.lib and ng.name not in ufo_jp.lib["public.glyphOrder"]:
-            ufo_jp.lib["public.glyphOrder"].append(ng.name)
 
 
 def _make_grade_master(
@@ -1062,13 +1022,11 @@ def _make_grade_master(
     return new_f
 
 
-def _make_variable_designspace(
-    masters: list[ufoLib2.Font], italic: bool, family_name: str = SANS_FAMILY,
-) -> DesignSpaceDocument:
+def _make_variable_designspace(masters: list[ufoLib2.Font], italic: bool, family_name: str = SANS_FAMILY) -> DesignSpaceDocument:
     var_ds = DesignSpaceDocument()
     ax_wght, ax_grad = AxisDescriptor(), AxisDescriptor()
     ax_wght.tag, ax_wght.name, ax_wght.minimum, ax_wght.default, ax_wght.maximum = "wght", "Weight", 100, 400, 700
-    ax_wght.map = [(100, 100), (400, 360), (700, 700)]
+    ax_wght.map = list(WEIGHT_DESIGN_MAP)
     ax_grad.tag, ax_grad.name, ax_grad.minimum, ax_grad.default, ax_grad.maximum = "GRAD", "Grade", -100, 0, 100
     var_ds.addAxis(ax_wght)
     var_ds.addAxis(ax_grad)
@@ -1087,131 +1045,107 @@ def _make_variable_designspace(
 
     for w_name in WEIGHTS:
         inst = InstanceDescriptor()
-        w_user = WEIGHT_VALUES[w_name]
-        w_design = ax_wght.map_forward(w_user)
         inst.familyName, inst.styleName = family_name, style_names(w_name, italic)[0]
-        inst.location = {"Weight": w_design, "Grade": 0}
+        inst.location = {"Weight": ax_wght.map_forward(WEIGHT_VALUES[w_name]), "Grade": 0}
         var_ds.addInstance(inst)
     return var_ds
 
 
+def _restore_sans_gpos_and_base(var_font: TTFont) -> None:
+    """Copy full GPOS (kern, palt, vpal, halt, vhal, vkrn) and BASE from upstream JP Regular into Variable Sans."""
+    ref_jp = TTFont(ensure_ttf_source("plex-sans-jp/fonts/complete/ttf/unhinted/IBMPlexSansJP-Regular.ttf"))
+    for tag in ("BASE", "GPOS"):
+        if tag in ref_jp:
+            var_font[tag] = copy.deepcopy(ref_jp[tag])
+    _sync_otl_glyph_order(var_font)
+
+
 def _compile_and_export_vf(
-    var_ds: DesignSpaceDocument, italic: bool, masters: list[ufoLib2.Font],
-    family_name: str = SANS_FAMILY, output_dir: Path = OUTPUT_DIR,
+    var_ds: DesignSpaceDocument, italic: bool, family_name: str = SANS_FAMILY, output_dir: Path = OUTPUT_DIR,
 ) -> Path:
-    style_label = "Italic" if italic else "Roman"
-    family_compact = family_name.replace(" ", "")
+    style_label, family_compact = ("Italic" if italic else "Roman"), family_name.replace(" ", "")
     is_mono = (family_name == MONO_FAMILY)
-    ufo_thin, ufo_reg, ufo_bold, ufo_grad_pos, ufo_grad_neg = masters
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     inter_otf = TMP_DIR / f"{family_compact}-{style_label}-Variable.inter.otf"
 
     print(f"Compiling CFF2 variable font ({family_name} {style_label})...")
     var_font = ufo2ft.compileVariableCFF2(var_ds)
 
-    italic_angle = MONO_ITALIC_ANGLE if is_mono else SANS_ITALIC_ANGLE
-    ps_suffix = apply_opentype_metadata(var_font, family_name, "Regular", italic, italic_angle, is_variable=True)
+    ps_suffix = apply_opentype_metadata(var_font, family_name, "Regular", italic, MONO_ITALIC_ANGLE if is_mono else SANS_ITALIC_ANGLE, is_variable=True)
     _fix_u3000(var_font, FULL_WIDTH if is_mono else 1000)
 
     if is_mono:
-        cmap_best = var_font.getBestCmap()
-        if 0x0020 in cmap_best and "vmtx" in var_font:
+        if 0x0020 in (cmap_best := var_font.getBestCmap()) and "vmtx" in var_font:
             var_font["hmtx"][cmap_best[0x0020]] = (HALF_WIDTH, 0)
             var_font["vmtx"].metrics[cmap_best[0x0020]] = (FULL_WIDTH, 880)
         _apply_mono_metrics_and_cleanup(var_font, clean_gsub=False)
+    else:
+        _restore_sans_gpos_and_base(var_font)
 
-    stat_axes = [
-        {"tag": "wght", "name": "Weight", "ordering": 0, "values": [
-            {"value": v, "name": n, **({"flags": 2, "linkedValue": 700} if v == 400 else {})}
-            for v, n in zip([100, 200, 300, 400, 450, 500, 600, 700], WEIGHTS)
-        ]},
-        {"tag": "GRAD", "name": "Grade", "ordering": 1, "values": [{"value": 0, "name": "Normal", "flags": 2}]},
-        {"tag": "ital", "name": "Italic", "ordering": 2, "values": [
-            {"value": 1.0, "name": "Italic", "flags": 0} if italic else {"value": 0.0, "name": "Regular", "flags": 2, "linkedValue": 1.0}
-        ]},
-    ]
-    buildStatTable(var_font, stat_axes)
-
-    out_otf = output_dir / f"{family_compact}-{ps_suffix}.otf"
-    out_woff2 = output_dir / f"{family_compact}-{ps_suffix}.woff2"
+    out_otf, out_woff2 = output_dir / f"{family_compact}-{ps_suffix}.otf", output_dir / f"{family_compact}-{ps_suffix}.woff2"
     _export_and_chws(var_font, inter_otf, out_otf, out_woff2, is_mono, output_dir, label=style_label)
     return out_otf
 
 
-def build_family_variable_fonts(
-    family_name: str, style: str = "both", output_dir: Path = OUTPUT_DIR,
-) -> list[Path]:
+def _get_base_jp_ufos(glyphs_path: Path) -> list[ufoLib2.Font]:
+    """Load, decompose, and prepare Japanese UFO masters once per process."""
+    global _BASE_JP_UFOS
+    if _BASE_JP_UFOS is None:
+        t0 = time.time()
+        ds = to_designspace(GSFont(str(glyphs_path)), minimal=True)
+        print(f"Loaded Glyphs source in {time.time() - t0:.1f}s.")
+        _BASE_JP_UFOS = [ds.sources[0].font, ds.sources[1].font, ds.sources[2].font]
+        for u in _BASE_JP_UFOS:
+            u.lib.pop("com.github.googlei18n.ufo2ft.filters", None)
+            decompose_ufo(u)
+            for g in u:
+                if ORIGINAL_WIDTH_KEY in g.lib:
+                    g.width = g.lib[ORIGINAL_WIDTH_KEY]
+            if "uni51F0" in u:
+                u["uni51F0"].width = 1000
+            if "emptyset.full" in u and "emptyset" in u:
+                u["emptyset.full"].unicodes, u["emptyset"].unicodes = [], [0x2205]
+            _add_vertical_semicolon_to_ufo(u)
+        add_cjk_compatibility_mappings_to_ufos(_BASE_JP_UFOS)
+    return _BASE_JP_UFOS
+
+
+def build_family_variable_fonts(family_name: str, style: str = "both", output_dir: Path = OUTPUT_DIR) -> list[Path]:
     """Build 2-file Variable Fonts for Holon Sans or Holon Mono."""
     is_mono = (family_name == MONO_FAMILY)
+    full_width = FULL_WIDTH if is_mono else 1000
     glyphs_path, latin_masters_dir = ensure_variable_sources("mono" if is_mono else "sans")
     print(f"\n=== Building {family_name} Variable Fonts (2-File Architecture) ===")
-    t0 = time.time()
-    ds = to_designspace(GSFont(str(glyphs_path)), minimal=True)
-    print(f"Loaded Glyphs source in {time.time() - t0:.1f}s.")
-    u_jp_thin, u_jp_reg, u_jp_bold = ds.sources[0].font, ds.sources[1].font, ds.sources[2].font
-
-    for u in (u_jp_thin, u_jp_reg, u_jp_bold):
-        u.lib.pop("com.github.googlei18n.ufo2ft.filters", None)
-        decompose_ufo(u)
-        u.info.familyName = family_name
-        for g in u:
-            if ORIGINAL_WIDTH_KEY in g.lib:
-                g.width = g.lib[ORIGINAL_WIDTH_KEY]
-        if "uni51F0" in u:
-            u["uni51F0"].width = 1000
-        if not is_mono and "emptyset.full" in u and "emptyset" in u:
-            u["emptyset.full"].unicodes = []
-            u["emptyset"].unicodes = [0x2205]
-        _add_vertical_semicolon_to_ufo(u)
-
-    if is_mono:
-        add_cjk_compatibility_mappings_to_ufos([u_jp_thin, u_jp_reg, u_jp_bold], u_jp_reg)
+    base_ufos = _get_base_jp_ufos(glyphs_path)
 
     built = []
     for s in ("roman", "italic") if style == "both" else (style,):
         italic = (s == "italic")
-        u_t, u_r, u_b = copy.deepcopy(u_jp_thin), copy.deepcopy(u_jp_reg), copy.deepcopy(u_jp_bold)
-        ufos = [u_t, u_r, u_b]
-
-        if is_mono:
-            for u in ufos:
-                _apply_ufo_cjk_transform(u, MONO_FAMILY, italic=italic)
-            stems = ("Thin Italic.ufo", "Italic.ufo", "Bold Italic.ufo") if italic else ("Thin.ufo", "Regular.ufo", "Bold.ufo")
-            for u, stem in zip(ufos, stems):
-                _merge_mono_variable_latin(u, ufoLib2.Font.open(latin_masters_dir / f"IBM Plex Mono Var-{stem}"))
-        else:
-            for u in ufos:
-                _apply_ufo_cjk_transform(u, SANS_FAMILY, italic=italic)
-            added = _merge_sans_variable_latin(u_t, u_r, u_b, latin_masters_dir, italic=italic)
-            print(f"Merged {added} IBM Plex Sans UFO glyphs ({'Italic' if italic else 'Roman'}, 1.02x scale).")
-            add_cjk_compatibility_mappings_to_ufos(ufos, u_r)
-
+        ufos = [copy.deepcopy(u) for u in base_ufos]
         for u in ufos:
+            u.info.familyName = family_name
+            _apply_ufo_cjk_transform(u, family_name, italic=italic)
+        added = _merge_variable_latin(ufos, latin_masters_dir, is_mono=is_mono, italic=italic)
+        print(f"Merged {added} IBM Plex {'Mono' if is_mono else 'Sans'} UFO glyphs ({'Italic' if italic else 'Roman'}).")
+
+        order = sorted(
+            ufos[1].glyphOrder,
+            key=lambda g: (g != ".notdef", g in ufos[1] and all(m[g].width == full_width and m[g].height == full_width for m in ufos)),
+        )
+        for u in ufos:
+            u.glyphOrder = order
             cats = u.lib.get("public.openTypeCategories", {})
             for gname, cat in list(cats.items()):
                 if cat == "mark" and gname in u and u[gname].width > 0:
                     cats[gname] = "base"
 
         suffix = " Italic" if italic else ""
-        u_gp = _make_grade_master(u_r, u_b, 0.15, f"Regular{suffix} Grade+", family_name=family_name)
-        u_gn = _make_grade_master(u_r, u_t, 0.15, f"Regular{suffix} Grade-", family_name=family_name)
-        var_ds = _make_variable_designspace([u_t, u_r, u_b, u_gp, u_gn], italic=italic, family_name=family_name)
-        built.append(_compile_and_export_vf(var_ds, italic, [u_t, u_r, u_b, u_gp, u_gn], family_name=family_name, output_dir=output_dir))
+        u_gp = _make_grade_master(ufos[1], ufos[2], 0.15, f"Regular{suffix} Grade+", family_name=family_name)
+        u_gn = _make_grade_master(ufos[1], ufos[0], 0.15, f"Regular{suffix} Grade-", family_name=family_name)
+        var_ds = _make_variable_designspace([*ufos, u_gp, u_gn], italic=italic, family_name=family_name)
+        built.append(_compile_and_export_vf(var_ds, italic, family_name=family_name, output_dir=output_dir))
 
     return built
-
-
-def build_sans_variable_fonts(style: str = "both", output_dir: Path = OUTPUT_DIR) -> list[Path]:
-    return build_family_variable_fonts(SANS_FAMILY, style=style, output_dir=output_dir)
-
-
-def build_mono_variable_fonts(style: str = "both", output_dir: Path = OUTPUT_DIR) -> list[Path]:
-    return build_family_variable_fonts(MONO_FAMILY, style=style, output_dir=output_dir)
-
-
-def build_variable_fonts(family: str = "all", style: str = "both", output_dir: Path = OUTPUT_DIR) -> list[Path]:
-    fams = (SANS_FAMILY,) if family in ("sans", "sans-variable") else ((MONO_FAMILY,) if family in ("mono", "mono-variable") else (SANS_FAMILY, MONO_FAMILY))
-    return [p for f in fams for p in build_family_variable_fonts(f, style=style, output_dir=output_dir)]
 
 
 # --- CLI Entry Point ---
@@ -1231,19 +1165,16 @@ def main() -> None:
     weights = WEIGHTS if (args.all_styles or args.weight == "all") else [args.weight]
     italics = [False, True] if args.all_styles else [args.italic]
 
-    if args.family in ("sans", "all"):
-        for w in weights:
-            for it in italics:
-                build_sans_style(w, italic=it, output_dir=args.output_dir)
-
-    if args.family in ("mono", "all"):
-        for w in weights:
-            for it in italics:
-                build_mono_style(w, italic=it, output_dir=args.output_dir)
+    for fam_key, fam_name in (("sans", SANS_FAMILY), ("mono", MONO_FAMILY)):
+        if args.family in (fam_key, "all"):
+            for w in weights:
+                for it in italics:
+                    build_static_style(fam_name, w, italic=it, output_dir=args.output_dir)
 
     if args.family in ("sans-variable", "mono-variable", "variable", "all"):
-        target_vf = "sans" if args.family == "sans-variable" else ("mono" if args.family == "mono-variable" else "all")
-        build_variable_fonts(family=target_vf, style=args.var_style, output_dir=args.output_dir)
+        var_fams = (SANS_FAMILY,) if args.family == "sans-variable" else ((MONO_FAMILY,) if args.family == "mono-variable" else (SANS_FAMILY, MONO_FAMILY))
+        for fam_name in var_fams:
+            build_family_variable_fonts(fam_name, style=args.var_style, output_dir=args.output_dir)
 
     write_ofl_license(args.output_dir)
 

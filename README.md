@@ -140,8 +140,11 @@ uv run build.py --family all --all-styles
 # 出力先ディレクトリの指定（デフォルト: fonts/）
 uv run build.py --family sans --weight Regular --output-dir dist/
 
-# 自動検証テストスイート＆標本画像（specimens/*.png）の生成
+# 自動検証テストスイートの実行
 uv run test.py
+
+# テスト実行＋標本画像（specimens/*.png）の生成
+uv run test.py --specimens
 ```
 
 ## ライセンス
