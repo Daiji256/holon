@@ -471,12 +471,19 @@ def style_names(weight: str, italic: bool) -> tuple[str, str, str]:
     return style_name, style_name.replace(" ", ""), subfamily
 
 
-def build_family_stat_table(font: TTFont, italic: bool, is_variable: bool = False) -> None:
+def build_family_stat_table(font: TTFont, weight: str = "Regular", italic: bool = False, is_variable: bool = False) -> None:
     """Build OpenType 1.8+ STAT table for both Static and Variable fonts."""
-    stat_axes = [{"tag": "wght", "name": "Weight", "ordering": 0, "values": [
-        {"value": v, "name": n, **({"flags": 2, "linkedValue": 700} if v == 400 else {})}
-        for v, n in zip(WEIGHT_VALUES.values(), WEIGHTS)
-    ]}]
+    if is_variable:
+        wght_values = [
+            {"value": v, "name": n, **({"flags": 2, "linkedValue": 700} if v == 400 else {})}
+            for v, n in zip(WEIGHT_VALUES.values(), WEIGHTS)
+        ]
+    else:
+        wv = WEIGHT_VALUES.get(weight, 400)
+        wght_values = [
+            {"value": wv, "name": weight, **({"flags": 2, "linkedValue": 700} if wv == 400 else {})}
+        ]
+    stat_axes = [{"tag": "wght", "name": "Weight", "ordering": 0, "values": wght_values}]
     if is_variable:
         stat_axes.append({"tag": "GRAD", "name": "Grade", "ordering": 1, "values": [{"value": 0, "name": "Normal", "flags": 2}]})
     stat_axes.append({"tag": "ital", "name": "Italic", "ordering": len(stat_axes), "values": [
@@ -541,7 +548,7 @@ def apply_opentype_metadata(
     font["post"].italicAngle = italic_angle if italic else 0.0
     font["hhea"].caretSlopeRise, font["hhea"].caretSlopeRun = (1000, round(1000.0 * math.tan(math.radians(-italic_angle)))) if italic else (1, 0)
 
-    build_family_stat_table(font, italic=italic, is_variable=is_variable)
+    build_family_stat_table(font, weight=weight, italic=italic, is_variable=is_variable)
     ensure_gdef_table(font)
     return ps_suffix
 

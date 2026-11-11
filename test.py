@@ -461,6 +461,24 @@ def test_variable_axes_avar_and_stat(fonts_dir: Path, vname: str) -> None:
         assert matched and abs(matched[0] - float(wv)) < 1.0
 
 
+def test_static_stat_single_axis_value(fonts_dir: Path) -> None:
+    """Verify static fonts only declare their own weight in STAT table (single wght AxisValue) to prevent Windows misidentification."""
+    checked = 0
+    for fname, exp_w in [("HolonSans-Regular.ttf", 400.0), ("HolonSans-Bold.ttf", 700.0)]:
+        p = fonts_dir / fname
+        if not p.exists():
+            continue
+        font = get_tt(p)
+        stat = font["STAT"].table
+        assert stat.DesignAxisCount == 2
+        axis_values = stat.AxisValueArray.AxisValue
+        wght_values = [v for v in axis_values if v.AxisIndex == 0]
+        assert len(wght_values) == 1, f"{fname} must have exactly one STAT entry for 'wght', got {len(wght_values)}"
+        assert wght_values[0].Value == exp_w
+        checked += 1
+    assert checked > 0
+
+
 @pytest.mark.parametrize("vname", VARIABLE_FONTS)
 def test_variable_grad_advance_and_optical_density(fonts_dir: Path, vname: str) -> None:
     """Verify GRAD preserves advance widths across the repertoire while strictly modulating ink density."""
