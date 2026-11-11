@@ -435,6 +435,8 @@ def test_sans_gpos_and_gsub_feature_parity(fonts_dir: Path, sname: str) -> None:
     assert sum(pos.x_advance for pos in shape(p, "「あ」", feat={"palt": True})[1]) < sum(pos.x_advance for pos in shape(p, "「あ」", feat={"palt": False})[1])
     assert sum(-pos.y_advance for pos in shape(p, "「あ」", feat={"vert": True, "vpal": True}, vert=True)[1]) < sum(-pos.y_advance for pos in shape(p, "「あ」", feat={"vert": True, "vpal": False}, vert=True)[1])
     assert sum(pos.x_advance for pos in shape(p, "123", feat={"fwid": True})[1]) == 3000
+    assert shape(p, "0", feat={"zero": False})[0][0].codepoint != shape(p, "0", feat={"zero": True})[0][0].codepoint
+
 
 
 # --- 5. Variable Fonts: fvar, avar, STAT, GRAD & Static Parity ---
