@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Holon Font Specimen & Interactive Demo</title>
+  <style>
+    @font-face {
+      font-family: 'Holon Sans';
+      src: url('fonts/full/HolonSans-Variable.woff2') format('woff2');
+      font-weight: 100 700;
+      font-style: normal;
+    }
+    @font-face {
+      font-family: 'Holon Sans';
+      src: url('fonts/full/HolonSans-Italic-Variable.woff2') format('woff2');
+      font-weight: 100 700;
+      font-style: italic;
+    }
+    @font-face {
+      font-family: 'Holon Mono';
+      src: url('fonts/full/HolonMono-Variable.woff2') format('woff2');
+      font-weight: 100 700;
+      font-style: normal;
+    }
+    @font-face {
+      font-family: 'Holon Mono';
+      src: url('fonts/full/HolonMono-Italic-Variable.woff2') format('woff2');
+      font-weight: 100 700;
+      font-style: italic;
+    }
+
+    :root {
+      --bg: #ffffff;
+      --fg: #111827;
+      --border: #e5e7eb;
+      --panel-bg: #f9fafb;
+      --accent: #2563eb;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --fg: #f8fafc;
+        --border: #334155;
+        --panel-bg: #1e293b;
+        --accent: #3b82f6;
+      }
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      padding: 24px;
+      max-width: 1100px;
+      margin: 0 auto;
+      line-height: 1.5;
+    }
+
+    header {
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    header h1 { font-size: 20px; font-weight: 600; }
+    header span { font-size: 13px; color: #6b7280; }
+
+    /* Control Panel */
+    .controls {
+      background: var(--panel-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 24px;
+      font-size: 13px;
+      align-items: center;
+    }
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .control-group label {
+      font-weight: 500;
+      color: var(--fg);
+    }
+    select, input[type="range"], button {
+      accent-color: var(--accent);
+    }
+    select {
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .val {
+      display: inline-block;
+      min-width: 32px;
+      text-align: right;
+      color: #6b7280;
+      font-family: monospace;
+    }
+
+    /* Preview Canvas */
+    .preview {
+      font-family: 'Holon Sans', sans-serif;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+      min-height: 360px;
+      outline: none;
+      word-break: break-all;
+      white-space: pre-wrap;
+    }
+    .preview.vertical {
+      writing-mode: vertical-rl;
+      height: 480px;
+      overflow-x: auto;
+    }
+
+    /* Tabs / Quick Presets */
+    .presets {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .preset-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--fg);
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .preset-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>Holon — Font Demo</h1>
+    <span>Interactive Specimen (Static & Variable)</span>
+  </header>
+
+  <div class="controls">
+    <!-- Family -->
+    <div class="control-group">
+      <label for="family">Family:</label>
+      <select id="family">
+        <option value="'Holon Sans', sans-serif" selected>Holon Sans</option>
+        <option value="'Holon Mono', monospace">Holon Mono</option>
+      </select>
+    </div>
+
+    <!-- Weight -->
+    <div class="control-group">
+      <label for="weight">wght:</label>
+      <input type="range" id="weight" min="100" max="700" step="10" value="400">
+      <span id="weight-val" class="val">400</span>
+    </div>
+
+    <!-- Grade -->
+    <div class="control-group">
+      <label for="grad">GRAD:</label>
+      <input type="range" id="grad" min="-100" max="100" step="5" value="0">
+      <span id="grad-val" class="val">0</span>
+    </div>
+
+    <!-- Size -->
+    <div class="control-group">
+      <label for="size">Size:</label>
+      <input type="range" id="size" min="12" max="72" step="1" value="24">
+      <span id="size-val" class="val">24px</span>
+    </div>
+
+    <!-- Italic -->
+    <div class="control-group">
+      <label><input type="checkbox" id="italic"> Italic</label>
+    </div>
+
+    <!-- Features -->
+    <div class="control-group">
+      <label><input type="checkbox" id="chws" checked> chws (約物ツメ)</label>
+    </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="zero"> zero (0)</label>
+    </div>
+    <div class="control-group">
+      <label><input type="checkbox" id="vert"> 縦書き</label>
+    </div>
+  </div>
+
+  <div class="presets">
+    <button class="preset-btn" id="preset-sans">Holon Sans 和欧混植</button>
+    <button class="preset-btn" id="preset-mono">Holon Mono コード & 罫線</button>
+    <button class="preset-btn" id="preset-yakumono">JIS X 4051 約物ツメ</button>
+  </div>
+
+  <div id="preview" class="preview" contenteditable="true" spellcheck="false">
+あのイーハトーヴォのすきとおった風、夏でも底に冷たさをもつ青いそら、うつくしい森で飾られたモリーオ市、郊外のぎらぎらひかる草の波。
+The quick brown fox jumps over the lazy dog. 0123456789 (Dual-scaling 0.97x / 1.02x)
+「新・東京（港区）」：【速報】——和文イタリックと約物ツメの検証。</div>
+
+  <script>
+    const preview = document.getElementById('preview');
+    const familySel = document.getElementById('family');
+    const weightInput = document.getElementById('weight');
+    const weightVal = document.getElementById('weight-val');
+    const gradInput = document.getElementById('grad');
+    const gradVal = document.getElementById('grad-val');
+    const sizeInput = document.getElementById('size');
+    const sizeVal = document.getElementById('size-val');
+    const italicCb = document.getElementById('italic');
+    const chwsCb = document.getElementById('chws');
+    const zeroCb = document.getElementById('zero');
+    const vertCb = document.getElementById('vert');
+
+    function updateStyles() {
+      preview.style.fontFamily = familySel.value;
+      preview.style.fontSize = sizeInput.value + 'px';
+      preview.style.fontStyle = italicCb.checked ? 'italic' : 'normal';
+      preview.style.fontVariationSettings = `'wght' ${weightInput.value}, 'GRAD' ${gradInput.value}`;
+
+      const feats = [];
+      if (chwsCb.checked) feats.push('"chws" 1');
+      if (zeroCb.checked) feats.push('"zero" 1');
+      if (vertCb.checked) feats.push('"vchw" 1');
+      preview.style.fontFeatureSettings = feats.length ? feats.join(', ') : 'normal';
+
+      if (vertCb.checked) {
+        preview.classList.add('vertical');
+      } else {
+        preview.classList.remove('vertical');
+      }
+
+      weightVal.textContent = weightInput.value;
+      gradVal.textContent = gradInput.value;
+      sizeVal.textContent = sizeInput.value + 'px';
+    }
+
+    [familySel, weightInput, gradInput, sizeInput, italicCb, chwsCb, zeroCb, vertCb].forEach(el => {
+      el.addEventListener('input', updateStyles);
+    });
+
+    document.getElementById('preset-sans').addEventListener('click', () => {
+      familySel.value = "'Holon Sans', sans-serif";
+      vertCb.checked = false;
+      preview.innerText = `あのイーハトーヴォのすきとおった風、夏でも底に冷たさをもつ青いそら、うつくしい森で飾られたモリーオ市、郊外のぎらぎらひかる草の波。
+The quick brown fox jumps over the lazy dog. 0123456789 (Dual-scaling 0.97x / 1.02x)
+「新・東京（港区）」：【速報】——和文イタリックと約物ツメの検証。`;
+      updateStyles();
+    });
+
+    document.getElementById('preset-mono').addEventListener('click', () => {
+      familySel.value = "'Holon Mono', monospace";
+      vertCb.checked = false;
+      preview.innerText = `┌───────────────────┬──────────────┬────────┐
+│ Package           │ Version      │ Status │
+├───────────────────┼──────────────┼────────┤
+│ @holon/sans       │ 1.0.0        │ 良好   │
+│ @holon/mono       │ 1.0.0 (2:1)  │ 稼働中 │
+└───────────────────┴──────────────┴────────┘
+// 2:1 厳密デュオスペース (半角 550 : 全角 1100 UPM)
+fn main() -> Result<(), Box<dyn Error>> {
+    let msg = "Hello, 世界！ 0123456789";
+    println!("{}", msg);
+    Ok(())
+}`;
+      updateStyles();
+    });
+
+    document.getElementById('preset-yakumono').addEventListener('click', () => {
+      familySel.value = "'Holon Sans', sans-serif";
+      preview.innerText = `【約物半角ツメ（chws）の比較検証】
+・連続する括弧：「（株）」「『新・東京』」
+・句読点＋括弧：「はい。」と答えた。（本当か？）
+・中点類と括弧：・「中点と括弧」；「セミコロン」
+・全角スペース：　全角アキとコロン: 半角空白`;
+      updateStyles();
+    });
+
+    updateStyles();
+  </script>
+</body>
+</html>

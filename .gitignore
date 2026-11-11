@@ -17,11 +17,9 @@ specimens/
 *.svg
 *.webp
 
-# HTML test previews (do not commit)
+# HTML test previews
 *.html
-
-# OFL.txt (committed only when fonts are committed)
-OFL.txt
+!demo.html
 
 # Python artifacts
 __pycache__/

@@ -116,7 +116,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.fixture(scope="session")
 def fonts_dir(pytestconfig: pytest.Config) -> Path:
-    p = Path(pytestconfig.getoption("--fonts-dir", default=None) or os.environ.get("HOLON_FONTS_DIR", "fonts"))
+    cli_dir = pytestconfig.getoption("--fonts-dir", default=None)
+    if cli_dir:
+        p = Path(cli_dir)
+    else:
+        env_dir = os.environ.get("HOLON_FONTS_DIR")
+        if env_dir:
+            p = Path(env_dir)
+        elif Path("fonts/full").is_dir():
+            p = Path("fonts/full")
+        else:
+            p = Path("fonts")
     assert p.is_dir(), f"Fonts dir not found: {p}"
     return p
 
@@ -212,9 +222,9 @@ def test_unique_identifiers_and_family_metrics(fonts_dir: Path) -> None:
 
 
 def test_ofl_license_text(fonts_dir: Path) -> None:
-    ofl_p = fonts_dir / "OFL.txt"
+    ofl_p = fonts_dir / "OFL.txt" if (fonts_dir / "OFL.txt").exists() else Path("OFL.txt")
     if not ofl_p.exists():
-        pytest.skip("OFL.txt not present in fonts-dir")
+        pytest.skip("OFL.txt not present")
     content = ofl_p.read_bytes()
     assert b"SIL OPEN FONT LICENSE Version 1.1" in content and b"Daiji Suzuki" in content
     lic_src = Path("tmp/plex/packages/plex-sans-jp/LICENSE.txt")
