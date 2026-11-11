@@ -577,232 +577,629 @@ def test_variable_weight_monotonicity_fine_grained(fonts_dir: Path, vname: str) 
 
 # --- 6. Declarative Visual Specimen Engine ---
 
-def _render_card(p_out: Path, w: int, h: int, title: str, title_f: Path, els: list[Any], dark: bool = False) -> Path:
-    img = Image.new("RGBA", (w, h), (18, 22, 28, 255) if dark else (248, 249, 250, 255))
+def create_specimen_canvas(w: int, h: int, title: str, subtitle: str, f_title: Path, f_sub: Path) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    img = Image.new("RGBA", (w, h), (255, 255, 255, 255))
     draw = ImageDraw.Draw(img)
-    draw.rectangle([(40, 25), (w - 40, 95)], fill=(28, 33, 40) if dark else (255, 255, 255), outline=(48, 54, 61) if dark else (225, 228, 232))
-    draw_text_hb(img, title_f, title, 24, (65, 68), col=(240, 246, 252) if dark else (15, 23, 42))
-    for el in els:
-        cmd = el[0]
-        if cmd == "rect":
-            draw.rectangle(el[1], fill=el[2], outline=el[3] if len(el) > 3 else None, width=el[4] if len(el) > 4 else 1)
-        elif cmd == "t":
-            f, txt, sz, pos = el[1], el[2], el[3], el[4]
-            col = el[5] if len(el) > 5 else ((240, 246, 252) if dark else (15, 23, 42))
-            draw_text_hb(img, f, txt, sz, pos, feat=el[6] if len(el) > 6 else None, var=el[7] if len(el) > 7 else None, col=col, vert=el[8] if len(el) > 8 else False)
-        elif cmd == "lines":
-            f, lines, sz, x, sy, dy = el[1], el[2], el[3], el[4], el[5], el[6]
-            col = el[7] if len(el) > 7 else ((240, 246, 252) if dark else (15, 23, 42))
-            for i, line in enumerate(lines):
-                draw_text_hb(img, f, line, sz, (x, sy + i * dy), col=col)
-    SPECIMENS_DIR.mkdir(parents=True, exist_ok=True)
-    img.save(p_out)
-    return p_out
+    draw_text_hb(img, f_title, title, 22, (48, 48), col=(17, 24, 39))
+    draw_text_hb(img, f_sub, subtitle, 13, (48, 72), col=(107, 114, 128))
+    draw.line([(48, 88), (w - 48, 88)], fill=(229, 231, 235), width=1)
+    return img, draw
 
 
-def generate_all_glyphs_contact_sheet(p_font: Path, p_out: Path, title: str) -> Path:
-    """Generate high-density contact sheet containing 100% of all glyphs in the font."""
-    face = freetype.Face(str(p_font))
-    num_glyphs = face.num_glyphs
-    cols = 140
-    rows = (num_glyphs + cols - 1) // cols
-    cell_w, cell_h, header_h = 18, 20, 100
-    img_w, img_h = cols * cell_w + 80, rows * cell_h + header_h + 40
+def render_sans_weights(fonts_dir: Path, out_path: Path) -> Path:
+    sr = fonts_dir / "HolonSans-Regular.ttf"
+    sb = fonts_dir / "HolonSans-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 880,
+        "Holon Sans — Weights & Styles",
+        "8 static weights (100–700) × Upright / Italic (11.0° Oblique CJK + True Latin Italic)",
+        sb, sr
+    )
+    sample_text = "Sphinx of black quartz, judge my vow. 0123456789 美しい調和と組版"
+    y = 118
+    for wn in WEIGHTS:
+        wval = WEIGHT_VALS[wn]
+        f_up = fonts_dir / f"HolonSans-{wn}.ttf"
+        it_name = "HolonSans-Italic.ttf" if wn == "Regular" else f"HolonSans-{wn}Italic.ttf"
+        f_it = fonts_dir / it_name
+        if not (f_up.exists() and f_it.exists()):
+            continue
+        draw_text_hb(img, sb if wval >= 500 else sr, f"{wn:<10} {wval}", 13, (48, y + 4), col=(107, 114, 128))
+        draw_text_hb(img, f_up, sample_text, 16, (200, y + 4), col=(17, 24, 39))
+        draw_text_hb(img, sb if wval >= 500 else sr, f"{wn:<10} Italic", 13, (48, y + 32), col=(156, 163, 175))
+        draw_text_hb(img, f_it, sample_text, 16, (200, y + 32), col=(31, 41, 55))
+        y += 66
+        if wn != WEIGHTS[-1]:
+            draw.line([(48, y - 10), (1252, y - 10)], fill=(243, 244, 246), width=1)
+            y += 18
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
 
-    img = Image.new("RGBA", (img_w, img_h), (255, 255, 255, 255))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([(40, 20), (img_w - 40, 85)], fill=(248, 250, 252), outline=(226, 232, 240))
-    draw_text_hb(img, p_font, title, 20, (60, 48), col=(15, 23, 42))
-    draw.text((60, 60), f"Total Glyphs: {num_glyphs:,}  |  Grid: {cols} columns x {rows} rows  |  100% Complete Repertoire", fill=(100, 116, 139))
 
-    face.set_char_size(12 * 64)
-    for gid in range(num_glyphs):
-        face.load_glyph(gid, freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_NORMAL)
-        bm = face.glyph.bitmap
-        r, c = gid // cols, gid % cols
-        if bm.width > 0 and bm.rows > 0:
-            gx = 40 + c * cell_w + (cell_w - bm.width) // 2
-            gy = header_h + r * cell_h + 14 - face.glyph.bitmap_top
-            glyph_img = Image.frombytes("L", (bm.width, bm.rows), bytes(bm.buffer))
-            img.paste(Image.new("RGBA", (bm.width, bm.rows), (30, 41, 59, 255)), (gx, gy), glyph_img)
+def render_sans_chws(fonts_dir: Path, out_path: Path) -> Path:
+    sr = fonts_dir / "HolonSans-Regular.ttf"
+    sb = fonts_dir / "HolonSans-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 840,
+        "Holon Sans — Contextual Half-width Spacing (chws)",
+        "JIS X 4051 contextual spacing for Japanese punctuation: OFF (unadjusted) vs ON (half-width spacing)",
+        sb, sr
+    )
+    samples = [
+        ("1. 連続開き括弧・閉じ括弧と句点 (Consecutive brackets & punctuation)",
+         "「「連続開き括弧」」。 (閉じ括弧と句点の二分ツメ)"),
+        ("2. 中点類相互の二分ツメ (・: ; ) (Consecutive middle dots / colons)",
+         "中点連続：・・；；および・・・・ (中点類の自動二分ツメ)"),
+        ("3. 括弧と中点類の空き調整 (Brackets with middle dots / colons)",
+         "括弧と中点：「・」「：」「；」 項目：「東京」「京都」"),
+        ("4. 句点＋全角空白のアキ量調整 (Period followed by full-width space)",
+         "東京都。　次の段落 (句点余白＋全角空白のアキ量確認)"),
+        ("5. 和欧・約物混植 (Mixed Japanese and Western typography)",
+         "「Holon Sans」: Ver 1.0 (2026) —— 『約物半角ツメ検証』。"),
+    ]
+    y = 120
+    for title, text in samples:
+        draw_text_hb(img, sb, title, 13, (48, y), col=(55, 65, 81))
+        y += 30
+        draw_text_hb(img, sr, "[chws OFF]", 12, (48, y + 2), col=(156, 163, 175))
+        adv_off = draw_text_hb(img, sr, text, 18, (140, y + 2), feat={"chws": False}, col=(55, 65, 81))
+        y += 34
+        draw_text_hb(img, sb, "[chws ON ]", 12, (48, y + 2), col=(37, 99, 235))
+        adv_on = draw_text_hb(img, sr, text, 18, (140, y + 2), feat={"chws": True}, col=(17, 24, 39))
+        x_off = 140 + adv_off
+        x_on = 140 + adv_on
+        draw.line([(x_off, y - 32), (x_off, y + 18)], fill=(220, 38, 38), width=1)
+        draw.line([(x_on, y - 4), (x_on, y + 18)], fill=(37, 99, 235), width=1)
+        draw.line([(x_on, y + 18), (x_off, y + 18)], fill=(220, 38, 38), width=1)
+        y += 40
+        if title != samples[-1][0]:
+            draw.line([(48, y - 12), (1252, y - 12)], fill=(243, 244, 246), width=1)
+            y += 10
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
 
-    SPECIMENS_DIR.mkdir(parents=True, exist_ok=True)
-    img.save(p_out)
-    return p_out
+
+def render_sans_vertical(fonts_dir: Path, out_path: Path) -> Path:
+    sr = fonts_dir / "HolonSans-Regular.ttf"
+    sb = fonts_dir / "HolonSans-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 840,
+        "Holon Sans — Vertical Layout (vert, vrt2 & vchw)",
+        "Vertical glyph substitution (vert / vrt2) and vertical contextual spacing (vchw)",
+        sb, sr
+    )
+    cols = [
+        ("1. 句読点・長音", "縦書き置換：句読点（、。）長音符（ー）波線（〜）ダッシュ（——）", 1200, 1150),
+        ("2. 各種括弧類", "「開き括弧」『二重括弧』（丸括弧）［大括弧］【隅付き括弧】", 1080, 1045),
+        ("3. セミコロン回転", "項目１：：定義；；項目２：：検証；；項目３：：結び。・・；；", 960, 915),
+        ("4. 和欧混植", "Holon Sans 2026年 縦書きテキストと約物の調和。", 840, 810),
+    ]
+    for label, text, tx, hx in cols:
+        draw_text_hb(img, sb, label, 12, (hx, 120), col=(55, 65, 81))
+        draw_text_hb(img, sr, text, 18, (tx, 160), vert=True, col=(17, 24, 39))
+
+    # Section 5: vchw
+    draw_text_hb(img, sb, "5. 縦約物ツメ (vchw)", 12, (620, 120), col=(55, 65, 81))
+    vchw_test = "「『（［連続約物］）） 』」。・・「・」"
+    draw_text_hb(img, sr, "[vchw OFF]", 11, (710, 150), col=(156, 163, 175))
+    adv_off = draw_text_hb(img, sr, vchw_test, 18, (710, 180), feat={"vert": True, "vrt2": True, "vchw": False}, vert=True, col=(55, 65, 81))
+    draw_text_hb(img, sb, "[vchw ON ]", 11, (620, 150), col=(37, 99, 235))
+    adv_on = draw_text_hb(img, sr, vchw_test, 18, (620, 180), feat={"vert": True, "vrt2": True, "vchw": True}, vert=True, col=(17, 24, 39))
+
+    y_off = 180 + adv_off
+    y_on = 180 + adv_on
+    draw.line([(590, y_on), (645, y_on)], fill=(37, 99, 235), width=1)
+    draw.line([(590, y_off), (735, y_off)], fill=(220, 38, 38), width=1)
+
+    sep_x = 540
+    draw.line([(sep_x, 120), (sep_x, 780)], fill=(229, 231, 235), width=1)
+
+    # Section 6: Literature passage
+    draw_text_hb(img, sb, "6. 文学組版サンプル", 12, (410, 120), col=(55, 65, 81))
+    lines_lit = [
+        "吾輩は猫である。名前はまだ無い。",
+        "どこで生れたかとんと見当がつかぬ。",
+        "何でも薄暗いじめじめした所で",
+        "ニャーニャー泣いていた事だけは記憶している。",
+    ]
+    lx = 420
+    for line in lines_lit:
+        draw_text_hb(img, sr, line, 18, (lx, 160), vert=True, col=(17, 24, 39))
+        lx -= 75
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_sans_variable(fonts_dir: Path, out_path: Path) -> Path:
+    sr = fonts_dir / "HolonSans-Regular.ttf"
+    sb = fonts_dir / "HolonSans-Bold.ttf"
+    sv = fonts_dir / "HolonSans-Variable.otf"
+    img, draw = create_specimen_canvas(
+        1300, 1160,
+        "Holon Sans — Variable Font Axes (wght & GRAD)",
+        "Fine-grained weight interpolation (50 & 25 intervals) and layout-preserving optical grade adjustment",
+        sb, sr
+    )
+
+    # Section 1: 50-interval weight spectrum across full range (100..700)
+    draw_text_hb(img, sb, "1. Full Range Weight Spectrum (wght: 100..700 in 50-unit intervals)", 13, (48, 120), col=(55, 65, 81))
+    steps_50 = [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
+    y = 150
+    for wval in steps_50:
+        is_major = (wval % 100 == 0)
+        lbl_col = (17, 24, 39) if is_major else (156, 163, 175)
+        txt_col = (17, 24, 39)
+        draw_text_hb(img, sb if is_major else sr, f"wght {wval:>3}", 12, (48, y + 2), col=lbl_col)
+        draw_text_hb(img, sv, "a w x v y f g 0 8 あ 森 鬱   Sphinx of black quartz, judge my vow.", 16, (170, y + 2),
+                     var={"wght": wval, "GRAD": 0}, col=txt_col)
+        y += 27
+
+    draw.line([(48, y + 8), (1252, y + 8)], fill=(229, 231, 235), width=1)
+    y += 28
+
+    # Section 2: Fine 25-interval tuning in core reading weight range (350..500)
+    draw_text_hb(img, sb, "2. Fine-grained Weight Tuning (wght: 350..500 in 25-unit intervals)", 13, (48, y), col=(55, 65, 81))
+    steps_25 = [350, 375, 400, 425, 450, 475, 500]
+    y += 26
+    for wval in steps_25:
+        is_std = (wval in (400, 500))
+        lbl_col = (37, 99, 235) if is_std else (107, 114, 128)
+        draw_text_hb(img, sb if is_std else sr, f"wght {wval:>3}", 12, (48, y + 2), col=lbl_col)
+        draw_text_hb(img, sv, "微細ウェイト調整: 和欧の黒みと視覚的階調を25単位で制御 (Holon Sans 2026)", 17, (170, y + 2),
+                     var={"wght": wval, "GRAD": 0}, col=(17, 24, 39))
+        y += 30
+
+    draw.line([(48, y + 8), (1252, y + 8)], fill=(229, 231, 235), width=1)
+    y += 28
+
+    # Section 3: Grade Axis (GRAD: -100..+100) with advance width invariance
+    draw_text_hb(img, sb, "3. Grade Axis (GRAD: -100..+100) — Advance Width Invariance", 13, (48, y), col=(55, 65, 81))
+    grad_text = "The quick brown fox jumps over the lazy dog. 視覚的バランス 012345"
+
+    grad_steps = [-100, -50, 0, 50, 100]
+    y += 28
+    y_start_grad = y
+    adv_grad = 0
+    for gval in grad_steps:
+        sign_str = f"{gval:+4}" if gval != 0 else "   0"
+        is_default = (gval == 0)
+        lbl_col = (37, 99, 235) if is_default else ((17, 24, 39) if abs(gval) == 100 else (107, 114, 128))
+        draw_text_hb(img, sb if is_default else sr, f"[GRAD: {sign_str}]", 12, (48, y + 2), col=lbl_col)
+        adv = draw_text_hb(img, sv, grad_text, 17, (170, y + 2), var={"wght": 400, "GRAD": gval}, col=(17, 24, 39))
+        if not adv_grad:
+            adv_grad = adv
+        y += 30
+
+    # Red alignment guidelines across all 5 GRAD values (-100..+100)
+    x_start = 170
+    x_end = 170 + adv_grad
+    draw.line([(x_start, y_start_grad - 4), (x_start, y - 4)], fill=(220, 38, 38), width=1)
+    draw.line([(x_end, y_start_grad - 4), (x_end, y - 4)], fill=(220, 38, 38), width=1)
+
+    # Dark background box for halation test
+    y += 25
+    draw.rectangle([(48, y), (1252, y + 130)], fill=(17, 24, 39))
+    draw_text_hb(img, sr, "// Dark Mode Halation Optical Compensation (GRAD: -50, -100)", 12, (72, y + 20), col=(156, 163, 175))
+    dark_text = "Dark mode halation test: 白文字の光の膨張（ハレーション）抑制と可読性維持 012345"
+    draw_text_hb(img, sr, "[GRAD:    0]", 12, (72, y + 48), col=(156, 163, 175))
+    draw_text_hb(img, sv, dark_text, 15, (190, y + 48), var={"wght": 400, "GRAD": 0}, col=(243, 244, 246))
+    draw_text_hb(img, sb, "[GRAD:  -50]", 12, (72, y + 74), col=(147, 197, 253))
+    draw_text_hb(img, sv, dark_text, 15, (190, y + 74), var={"wght": 400, "GRAD": -50}, col=(243, 244, 246))
+    draw_text_hb(img, sb, "[GRAD: -100]", 12, (72, y + 100), col=(96, 165, 250))
+    draw_text_hb(img, sv, dark_text, 15, (190, y + 100), var={"wght": 400, "GRAD": -100}, col=(243, 244, 246))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_sans_features(fonts_dir: Path, out_path: Path) -> Path:
+    sr = fonts_dir / "HolonSans-Regular.ttf"
+    sb = fonts_dir / "HolonSans-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 840,
+        "Holon Sans — OpenType Features & Extended Repertoire",
+        "CJK compatibility kanji mappings, dotted zero (zero), and extended repertoire",
+        sb, sr
+    )
+
+    # Section 1: CJK Compatibility Kanji
+    draw_text_hb(img, sb, "1. CJK Compatibility Kanji Mappings (U+F900..U+FAFF) — No Missing Glyphs", 13, (48, 120), col=(55, 65, 81))
+    compat_samples = [
+        ("崎", "﨑", "U+FA11\n→ 﨑 (U+5D0E)"),
+        ("凞", "凞", "U+FA15\n→ 熙 (U+7199)"),
+        ("藹", "﨟", "U+FA1F\n→ 﨟 (U+814B)"),
+        ("穐", "蘒", "U+FA20\n→ 鵺 (U+874E)"),
+        ("諸", "諸", "U+FA22\n→ 諸 (U+8AF8)"),
+        ("豈", "豈", "U+F900\n→ 豈 (U+8C48)"),
+        ("更", "更", "U+F901\n→ 更 (U+66F4)"),
+        ("車", "車", "U+F902\n→ 車 (U+8ECA)"),
+        ("滑", "滑", "U+F904\n→ 滑 (U+6ED1)"),
+        ("金", "金", "U+F90A\n→ 金 (U+91D1)"),
+    ]
+    cx = 48
+    cy = 160
+    for idx, (label, ch, desc) in enumerate(compat_samples):
+        draw_text_hb(img, sb, ch, 28, (cx, cy), col=(17, 24, 39))
+        lines = desc.split("\n")
+        draw_text_hb(img, sb, lines[0], 11, (cx + 44, cy + 2), col=(17, 24, 39))
+        draw_text_hb(img, sr, lines[1], 10, (cx + 44, cy + 18), col=(107, 114, 128))
+        cx += 245
+        if (idx + 1) % 5 == 0:
+            cx = 48
+            cy += 70
+
+    draw.line([(48, 305), (1252, 305)], fill=(229, 231, 235), width=1)
+
+    # Section 2: Dotted / Slashed zero
+    draw_text_hb(img, sb, "2. Slashed / Dotted Zero (zero feature) — Numeric Disambiguation", 13, (48, 330), col=(55, 65, 81))
+    z_text = "0123456789 0 vs O (Capital Oh) 00:00 $0.00"
+    draw_text_hb(img, sr, "[zero OFF]", 12, (48, 370), col=(156, 163, 175))
+    draw_text_hb(img, sr, z_text, 22, (180, 370), feat={"zero": False}, col=(55, 65, 81))
+    draw_text_hb(img, sb, "[zero ON ]", 12, (48, 415), col=(37, 99, 235))
+    draw_text_hb(img, sr, z_text, 22, (180, 415), feat={"zero": True}, col=(17, 24, 39))
+
+    draw.line([(48, 465), (1252, 465)], fill=(229, 231, 235), width=1)
+
+    # Section 3: Extended Repertoire
+    draw_text_hb(img, sb, "3. Extended Repertoire & Symbols", 13, (48, 490), col=(55, 65, 81))
+    rep_items = [
+        ("Currencies", "$ 628,000  € 450,000  ¥ 1,280,000  £ 380,000  ₽ 500,000  ₴ 240,000  ₩ 890,000"),
+        ("Diacritics", "Ångström, café, naïve, façade, Zürich, Łódź, São Paulo, Đà Nẵng, Miloš, Gödel"),
+        ("Cyrillic", "Съешь же ещё death мягких французских булок, da выпей чаю. (Привет, мир!)"),
+        ("Greek", "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ  αβγδεζηθικλμνξοπρστυφχψω"),
+        ("Punctuation", "「」『』【】〔〕〈〉《》“”…―〜・：；、。！？（）［］｛｝※〒→←↑↓"),
+        ("Kanji", "森羅万象 鬱蒼 髑髏 薔薇 檸檬 麒麟 翡翠 躊躇 挨拶 邂逅 魑魅魍魎 葛飾 祇園 茨城 辻堂 鷗外 髙橋"),
+    ]
+    ry = 525
+    for label, samp in rep_items:
+        draw_text_hb(img, sb, label, 12, (48, ry + 4), col=(107, 114, 128))
+        draw_text_hb(img, sr, samp, 16, (180, ry + 4), col=(17, 24, 39))
+        ry += 42
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_mono_weights(fonts_dir: Path, out_path: Path) -> Path:
+    mr = fonts_dir / "HolonMono-Regular.ttf"
+    mb = fonts_dir / "HolonMono-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 880,
+        "Holon Mono — Weights & Styles",
+        "8 static weights (100–700) × Upright / Italic (9.0° Oblique CJK + True Latin Italic)",
+        mb, mr
+    )
+    sample_text = "pub fn calculate(rate: f64) -> Result<u64, Error> { // 2:1 等幅 0123456789 }"
+    y = 118
+    for wn in WEIGHTS:
+        wval = WEIGHT_VALS[wn]
+        f_up = fonts_dir / f"HolonMono-{wn}.ttf"
+        it_name = "HolonMono-Italic.ttf" if wn == "Regular" else f"HolonMono-{wn}Italic.ttf"
+        f_it = fonts_dir / it_name
+        if not (f_up.exists() and f_it.exists()):
+            continue
+        draw_text_hb(img, mb if wval >= 500 else mr, f"{wn:<10} {wval}", 13, (48, y + 4), col=(107, 114, 128))
+        draw_text_hb(img, f_up, sample_text, 16, (200, y + 4), col=(17, 24, 39))
+        draw_text_hb(img, mb if wval >= 500 else mr, f"{wn:<10} Italic", 13, (48, y + 32), col=(156, 163, 175))
+        draw_text_hb(img, f_it, sample_text, 16, (200, y + 32), col=(55, 65, 81))
+        y += 66
+        if wn != WEIGHTS[-1]:
+            draw.line([(48, y - 10), (1252, y - 10)], fill=(243, 244, 246), width=1)
+            y += 18
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_mono_duospace(fonts_dir: Path, out_path: Path) -> Path:
+    mr = fonts_dir / "HolonMono-Regular.ttf"
+    mb = fonts_dir / "HolonMono-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 840,
+        "Holon Mono — 2:1 Duospace Alignment (550 / 1100 UPM)",
+        "Exact 2:1 width ratio between half-width ASCII (550 UPM) and full-width CJK (1100 UPM)",
+        mb, mr
+    )
+
+    # Section 1: Column alignment grid
+    draw_text_hb(img, mb, "1. Column Alignment & Metric Ratio Verification", 13, (48, 120), col=(55, 65, 81))
+    ruler = "0----+----1----+----2----+----3----+----4----+----5----+----6----+----7----+----8"
+    ascii_line = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh"
+    hankaku_k =  "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾜｦﾝ0123456789abcdefghijklmnopqr"
+    kana_line =  "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらり"
+    kanji_line = "森羅万象春夏秋冬東西南北天地玄黄宇宙洪荒日月盈昃辰宿列張寒来暑往秋収冬蔵閏余成"
+
+    y = 150
+    draw_text_hb(img, mr, ruler, 14, (48, y), col=(156, 163, 175))
+    draw_text_hb(img, mr, ascii_line, 14, (48, y + 24), col=(31, 41, 55))
+    draw_text_hb(img, mr, hankaku_k, 14, (48, y + 48), col=(55, 65, 81))
+    draw_text_hb(img, mr, kana_line, 14, (48, y + 72), col=(17, 24, 39))
+    draw_text_hb(img, mr, kanji_line, 14, (48, y + 96), col=(17, 24, 39))
+
+    # Space comparison
+    draw_text_hb(img, mr, "[  ] 半角空白 2 文字 (550 × 2 = 1100 UPM)", 14, (48, y + 130), col=(55, 65, 81))
+    draw_text_hb(img, mr, "[　] 全角空白 1 文字 (1100 UPM / U+3000)", 14, (48, y + 154), col=(55, 65, 81))
+
+    draw.line([(48, 350), (1252, 350)], fill=(229, 231, 235), width=1)
+
+    # Section 2: Table layout with seamless dy
+    draw_text_hb(img, mb, "2. Mixed-Script Table Layout (Seamless Box Drawing)", 13, (48, 375), col=(55, 65, 81))
+    table_lines = [
+        "┌──────┬────────────┬────────────────────────┬────────┬──────────┐",
+        "│ ID   │ 氏名       │ 所属部署・担当領域     │ 権限   │ 状態     │",
+        "├──────┼────────────┼────────────────────────┼────────┼──────────┤",
+        "│ 0101 │ 田中　太郎 │ フロントエンド基盤開発 │ ADMIN  │ 稼働中   │",
+        "│ 0102 │ 鈴木　一郎 │ クラウドインフラ統括   │ ADMIN  │ 稼働中   │",
+        "│ 0103 │ 佐藤　健一 │ 自然言語処理モデル評価 │ MEMBER │ 離席中   │",
+        "│ 0104 │ 高橋　美咲 │ セキュリティ監査・運用 │ MEMBER │ 休暇中   │",
+        "└──────┴────────────┴────────────────────────┴────────┴──────────┘",
+    ]
+    ty = 405
+    for line in table_lines:
+        draw_text_hb(img, mr, line, 18, (48, ty), col=(17, 24, 39))
+        ty += 21
+
+    draw.line([(48, 600), (1252, 600)], fill=(229, 231, 235), width=1)
+
+    # Section 3: Indentation and alignment in code with Japanese
+    draw_text_hb(img, mb, "3. Column Indentation with Japanese Comments & Identifiers", 13, (48, 625), col=(55, 65, 81))
+    code_lines = [
+        "struct Record { id: u64, name: &'static str } // 2:1 等幅による正確なインデント保持",
+        "let records = vec![",
+        "    Record { id: 1001, name: \"東京支社\" }, // 4 漢字 (8 半角幅)",
+        "    Record { id: 1002, name: \"OSAKA   \" }, // 8 ASCII  (8 半角幅)",
+        "    Record { id: 1003, name: \"名古屋市\" }, // 4 漢字 (8 半角幅)",
+        "];",
+    ]
+    cy = 655
+    for line in code_lines:
+        draw_text_hb(img, mr, line, 15, (48, cy), col=(17, 24, 39))
+        cy += 24
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_mono_box_drawing(fonts_dir: Path, out_path: Path) -> Path:
+    mr = fonts_dir / "HolonMono-Regular.ttf"
+    mb = fonts_dir / "HolonMono-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 840,
+        "Holon Mono — Box Drawing & Block Elements (U+2500..U+259F)",
+        "Continuous, gap-free rendering across glyph bounding boxes in terminal & TUI environments",
+        mb, mr
+    )
+
+    # Section 1: Box Drawing Matrix
+    draw_text_hb(img, mb, "1. Box Drawing Matrix (U+2500..U+257F) — Seamless 21px Line Height", 13, (48, 120), col=(55, 65, 81))
+    box_matrix = [
+        "┌─┬─┐  ┏━┳━┓  ╔═╦═╗  ╭─┬─╮  ┌┬┐ ┏┳┓ ╔╦╗ ╭┬╮",
+        "│ │ │  ┃ ┃ ┃  ║ ║ ║  │ │ │  ├┼┤ ┣╋┫ ╠╬╣ ├┼┤",
+        "├─┼─┤  ┣━╋━┫  ╠═╬═╣  ├─┼─┤  └┴┘ ┗┻┛ ╚╩╝ ╰┴╯",
+        "└─┴─┘  ┗━┻━┛  ╚═╩═╝  ╰─┴─╯",
+    ]
+    by = 150
+    for line in box_matrix:
+        draw_text_hb(img, mr, line, 18, (48, by), col=(17, 24, 39))
+        by += 21
+
+    # Continuous lines
+    draw_text_hb(img, mr, "Light:   ──────────────────────────────────────────────────────────", 15, (48, 255), col=(31, 41, 55))
+    draw_text_hb(img, mr, "Heavy:   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", 15, (48, 280), col=(17, 24, 39))
+    draw_text_hb(img, mr, "Double:  ══════════════════════════════════════════════════════════", 15, (48, 305), col=(17, 24, 39))
+    draw_text_hb(img, mr, "Dashed:  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌", 15, (48, 330), col=(55, 65, 81))
+
+    draw.line([(48, 370), (1252, 370)], fill=(229, 231, 235), width=1)
+
+    # Section 2: TUI Window Sample (All lines exactly 77 cells wide, middle column at exact index 41)
+    draw_text_hb(img, mb, "2. Terminal & TUI Window Dialog Sample (Precise Corners & Joints)", 13, (48, 395), col=(55, 65, 81))
+    tui_window = [
+        "┌─[ System Monitor : HolonOS v2.4 ]─────────────────────────────────────────┐",
+        "│ Process: holon-daemon (PID: 4892)                   Uptime: 14d 08h 22m   │",
+        "├────────────────────────────────────────┬──────────────────────────────────┤",
+        "│ CPU [████████████████░░░░░░░░] 64.2%   │ Memory [██████████░░░░░░] 48.0%  │",
+        "│ Disk I/O: 124.5 MB/s (Read: 82%)       │ Network: 1.2 Gbps (Active)       │",
+        "├────────────────────────────────────────┴──────────────────────────────────┤",
+        "│ Press [F1] Help   [F5] Refresh   [F8] Log Detail   [F10] Exit             │",
+        "└───────────────────────────────────────────────────────────────────────────┘",
+    ]
+    wy = 425
+    for line in tui_window:
+        draw_text_hb(img, mr, line, 16, (48, wy), col=(17, 24, 39))
+        wy += 19
+
+    draw.line([(48, 600), (1252, 600)], fill=(229, 231, 235), width=1)
+
+    # Section 3: Block Elements
+    draw_text_hb(img, mb, "3. Block Elements (U+2580..U+259F) — Full UPM Vertical & Horizontal Span", 13, (48, 625), col=(55, 65, 81))
+    blocks = "█ ▀ ▄ ▌ ▐ ░ ▒ ▓   ▂ ▃ ▄ ▅ ▆ ▇ █ ▏ ▎ ▍ ▌ ▋ ▊ ▉ █"
+    draw_text_hb(img, mr, blocks, 18, (48, 655), col=(17, 24, 39))
+    draw_text_hb(img, mr, "[████████████████████████████████████████] 100% Complete", 15, (48, 700), col=(17, 24, 39))
+    draw_text_hb(img, mr, "[████████████████████░░░░░░░░░░░░░░░░░░░░]  50% In progress", 15, (48, 730), col=(55, 65, 81))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_mono_variable(fonts_dir: Path, out_path: Path) -> Path:
+    mr = fonts_dir / "HolonMono-Regular.ttf"
+    mb = fonts_dir / "HolonMono-Bold.ttf"
+    mv = fonts_dir / "HolonMono-Variable.otf"
+    img, draw = create_specimen_canvas(
+        1300, 1160,
+        "Holon Mono — Variable Font Axes (wght & GRAD)",
+        "Fine-grained weight interpolation (50 & 25 intervals) and exact cell-width preservation (550 / 1100 UPM)",
+        mb, mr
+    )
+
+    # Section 1: 50-interval weight spectrum across full range (100..700)
+    draw_text_hb(img, mb, "1. Full Range Weight Spectrum (wght: 100..700 in 50-unit intervals)", 13, (48, 120), col=(55, 65, 81))
+    code_sample = "fn process_record(id: u64, name: &str) -> bool { // 550/1100 UPM 列幅完全維持 }"
+    steps_50 = [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700]
+    y = 150
+    adv_first = 0
+    for wval in steps_50:
+        is_major = (wval % 100 == 0)
+        lbl_col = (17, 24, 39) if is_major else (156, 163, 175)
+        draw_text_hb(img, mb if is_major else mr, f"wght {wval:>3}", 12, (48, y + 2), col=lbl_col)
+        adv = draw_text_hb(img, mv, code_sample, 15, (170, y + 2), var={"wght": wval, "GRAD": 0}, col=(17, 24, 39))
+        if not adv_first:
+            adv_first = adv
+        y += 27
+
+    # Vertical guidelines to prove width invariance across all 13 weights
+    draw.line([(170, 142), (170, y)], fill=(220, 38, 38), width=1)
+    draw.line([(170 + adv_first, 142), (170 + adv_first, y)], fill=(220, 38, 38), width=1)
+
+    draw.line([(48, y + 8), (1252, y + 8)], fill=(229, 231, 235), width=1)
+    y += 28
+
+    # Section 2: Fine 25-interval tuning in core reading weight range (350..500)
+    draw_text_hb(img, mb, "2. Fine-grained Weight Tuning (wght: 350..500 in 25-unit intervals)", 13, (48, y), col=(55, 65, 81))
+    steps_25 = [350, 375, 400, 425, 450, 475, 500]
+    code_fine = 'let status = "ACTIVE"; // 25単位微細ウェイト調整: 文字幅は完全に不変 0123456789'
+    y += 26
+    adv_fine = 0
+    for wval in steps_25:
+        is_std = (wval in (400, 500))
+        lbl_col = (37, 99, 235) if is_std else (107, 114, 128)
+        draw_text_hb(img, mb if is_std else mr, f"wght {wval:>3}", 12, (48, y + 2), col=lbl_col)
+        adv = draw_text_hb(img, mv, code_fine, 15, (170, y + 2), var={"wght": wval, "GRAD": 0}, col=(17, 24, 39))
+        if not adv_fine:
+            adv_fine = adv
+        y += 30
+
+    draw.line([(170, y - (len(steps_25) * 30) - 4), (170, y)], fill=(220, 38, 38), width=1)
+    draw.line([(170 + adv_fine, y - (len(steps_25) * 30) - 4), (170 + adv_fine, y)], fill=(220, 38, 38), width=1)
+
+    draw.line([(48, y + 8), (1252, y + 8)], fill=(229, 231, 235), width=1)
+    y += 28
+
+    # Section 3: Grade Axis (GRAD: -100..+100) — Optical Density Adjustment & Width Invariance
+    draw_text_hb(img, mb, "3. Grade Axis (GRAD: -100..+100) — Optical Density Adjustment & Width Invariance", 13, (48, y), col=(55, 65, 81))
+    grad_text = 'let config = parse_env(); // 送り幅不変の光学補正・線の太さ調整 0123456789'
+
+    grad_steps = [-100, -50, 0, 50, 100]
+    y += 28
+    y_start_grad = y
+    adv_mg = 0
+    for gval in grad_steps:
+        sign_str = f"{gval:+4}" if gval != 0 else "   0"
+        is_default = (gval == 0)
+        lbl_col = (37, 99, 235) if is_default else ((17, 24, 39) if abs(gval) == 100 else (107, 114, 128))
+        draw_text_hb(img, mb if is_default else mr, f"[GRAD: {sign_str}]", 12, (48, y + 2), col=lbl_col)
+        adv = draw_text_hb(img, mv, grad_text, 15, (170, y + 2), var={"wght": 400, "GRAD": gval}, col=(17, 24, 39))
+        if not adv_mg:
+            adv_mg = adv
+        y += 30
+
+    draw.line([(170, y_start_grad - 4), (170, y - 4)], fill=(220, 38, 38), width=1)
+    draw.line([(170 + adv_mg, y_start_grad - 4), (170 + adv_mg, y - 4)], fill=(220, 38, 38), width=1)
+
+    # Dark background box
+    y += 25
+    draw.rectangle([(48, y), (1252, y + 130)], fill=(17, 24, 39))
+    draw_text_hb(img, mr, "// Dark Mode Halation Optical Compensation (GRAD: -50, -100)", 12, (72, y + 20), col=(156, 163, 175))
+    dark_code = 'let config = parse_env(); // ハレーション抑制光学補正 0123456789'
+    draw_text_hb(img, mr, "[GRAD:    0]", 12, (72, y + 48), col=(156, 163, 175))
+    draw_text_hb(img, mv, dark_code, 15, (190, y + 48), var={"wght": 400, "GRAD": 0}, col=(243, 244, 246))
+    draw_text_hb(img, mb, "[GRAD:  -50]", 12, (72, y + 74), col=(147, 197, 253))
+    draw_text_hb(img, mv, dark_code, 15, (190, y + 74), var={"wght": 400, "GRAD": -50}, col=(243, 244, 246))
+    draw_text_hb(img, mb, "[GRAD: -100]", 12, (72, y + 100), col=(96, 165, 250))
+    draw_text_hb(img, mv, dark_code, 15, (190, y + 100), var={"wght": 400, "GRAD": -100}, col=(243, 244, 246))
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
+
+
+def render_mono_code(fonts_dir: Path, out_path: Path) -> Path:
+    mr = fonts_dir / "HolonMono-Regular.ttf"
+    mb = fonts_dir / "HolonMono-Bold.ttf"
+    img, draw = create_specimen_canvas(
+        1300, 840,
+        "Holon Mono — Code Typography & Syntax Features",
+        "Programming character disambiguation, slashed zero (zero), operators, and code layout",
+        mb, mr
+    )
+
+    # Section 1: Character Disambiguation & zero
+    draw_text_hb(img, mb, "1. Character Disambiguation & Slashed Zero (zero feature)", 13, (48, 120), col=(55, 65, 81))
+    disambig = "0 vs O vs o  |  1 vs l vs I vs |  |  S vs 5  |  B vs 8  |  Z vs 2  |  ` vs '"
+    draw_text_hb(img, mr, disambig, 17, (48, 150), col=(31, 41, 55))
+
+    z_code = "0123456789  0x10FF  100_000  0.00  const PORT = 8080;"
+    draw_text_hb(img, mr, "[zero OFF]", 13, (48, 195), col=(156, 163, 175))
+    draw_text_hb(img, mr, z_code, 20, (180, 195), feat={"zero": False}, col=(55, 65, 81))
+    draw_text_hb(img, mb, "[zero ON ]", 13, (48, 235), col=(37, 99, 235))
+    draw_text_hb(img, mr, z_code, 20, (180, 235), feat={"zero": True}, col=(17, 24, 39))
+
+    draw.line([(48, 275), (1252, 275)], fill=(229, 231, 235), width=1)
+
+    # Section 2: Programming Operators & Delimiters
+    draw_text_hb(img, mb, "2. Programming Operators & Delimiters", 13, (48, 305), col=(55, 65, 81))
+    ops1 = "=>  ->  ::  !=  ==  ===  !==  <=  >=  &&  ||  ??  +=  -=  *=  /="
+    ops2 = "()  []  {}  <>  ;  :  ,  .  /  \\  ~  ^  &  *  %  $  #  @  !  ?"
+    draw_text_hb(img, mr, ops1, 16, (48, 340), col=(17, 24, 39))
+    draw_text_hb(img, mr, ops2, 16, (48, 370), col=(55, 65, 81))
+
+    draw.line([(48, 410), (1252, 410)], fill=(229, 231, 235), width=1)
+
+    # Section 3: Practical Code Snippet
+    draw_text_hb(img, mb, "3. Syntax Layout with Mixed Japanese Comments (Rust)", 13, (48, 435), col=(55, 65, 81))
+    rust_code = [
+        "// ユーザー認証およびセッション情報の非同期フェッチ処理",
+        "pub async fn authenticate_user(pool: &DbPool, req: AuthRequest) -> Result<Session, AppError> {",
+        "    let user = sqlx::query_as!(User, \"SELECT * FROM users WHERE email = $1\", req.email)",
+        "        .fetch_optional(pool)",
+        "        .await?",
+        "        .ok_or(AppError::NotFound(\"指定されたユーザーが存在しません\"))?;",
+        "",
+        "    if !crypto::verify_password(&req.password, &user.password_hash)? {",
+        "        return Err(AppError::Unauthorized(\"パスワードが一致しません\"));",
+        "    }",
+        "",
+        "    let token = jwt::generate_token(&user.id, Role::Admin)?; // 認可トークン発行",
+        "    println!(\"[AUTH] ユーザー '{}' のログインに成功しました\", user.name);",
+        "    Ok(Session { user_id: user.id, token, is_active: true })",
+        "}",
+    ]
+    cy = 465
+    for line in rust_code:
+        col = (107, 114, 128) if line.startswith("//") else (17, 24, 39)
+        draw_text_hb(img, mr, line, 15, (48, cy), col=col)
+        cy += 25
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out_path)
+    return out_path
 
 
 def generate_all_specimens(fonts_dir: Path) -> list[Path]:
-    sr, sb, si = fonts_dir / "HolonSans-Regular.ttf", fonts_dir / "HolonSans-Bold.ttf", fonts_dir / "HolonSans-Italic.ttf"
-    sv, siv = fonts_dir / "HolonSans-Variable.otf", fonts_dir / "HolonSans-Italic-Variable.otf"
-    mr, mi, mv = fonts_dir / "HolonMono-Regular.ttf", fonts_dir / "HolonMono-Italic.ttf", fonts_dir / "HolonMono-Variable.otf"
-    out = []
-
-    out.append(_render_card(SPECIMENS_DIR / "specimen_typography.png", 1200, 780, "Holon Sans — Typography & Visual Balance", sb, [
-        ("rect", [(40, 120), (1160, 500)], (255, 255, 255), (225, 228, 232)),
-        ("t", sb, "双方向スケーリング調整: 和文字 0.97x ＋ 欧文字 1.02x", 22, (65, 165), (37, 99, 235)),
-        ("lines", sr, ["Holon Sans（ホロン・サンズ）は、和文の圧迫感を抑え、欧文との美しい調和を追求したフォントです。",
-                       "Modern UI design requires seamless balance between Latin alphabets and Japanese kanji/kana.",
-                       "和文字を0.97倍に引き締めて中央配置し、欧文を1.02倍に調整。双方が一方的に拡大・縮小されない自然な混植です。",
-                       "Sphinx of black quartz, judge my vow. 1234567890 (0123456789) [A-Z, a-z] {+ - * / = % &}"], 19, 65, 210, 42, (51, 65, 85)),
-        ("t", si, "イタリック混植テスト: 全体と部分の哲学。The term Holon represents a whole that is part of a larger whole.", 19, (65, 380), (30, 41, 59)),
-        ("t", sr, "「『美しい約物の配置』と（洗練された組版）が、アプリの体験価値を一段階引き上げます。」", 20, (65, 425), (15, 23, 42), {"chws": True}),
-        ("rect", [(40, 520), (1160, 740)], (255, 255, 255), (225, 228, 232)),
-        ("t", sb, "マージされた拡張文字セット（キリル文字・通貨記号・発音区別符）", 18, (65, 555), (16, 185, 129)),
-        ("lines", sr, ["Currencies:   $ 628,000   € 450,000   ¥ 1,280,000   £ 380,000   ₽ 500,000   ₴ 240,000",
-                       "Cyrillic:     Съешь же ещё этих мягких французских булок, da выпей чаю. (Привет, мир!)",
-                       "Diacritics:   Ångström, café, naïve, façade, Zürich, Łódź, São Paulo, Đà Nẵng, Miloš"], 18, 65, 595, 40, (30, 41, 59)),
-    ]))
-
-    c_els = [("rect", [(40, 115), (1160, 465)], (255, 255, 255), (226, 232, 240)), ("rect", [(65, 135), (230, 163)], (239, 68, 68)), ("t", sb, "chws OFF (全角固定)", 13, (75, 155), (255, 255, 255)),
-             ("rect", [(40, 485), (1160, 835)], (255, 255, 255), (59, 130, 246), 2), ("rect", [(65, 505), (230, 533)], (37, 99, 235)), ("t", sb, "chws ON (自動ツメ)", 13, (75, 525), (255, 255, 255))]
-    for i, (s, hi) in enumerate([("中点類・コロン連続： ・：；　および　・・・・　（連続中点類の自動二分ツメ）", True),
-                                 ("中点と括弧： 「・」「：」「；」　項目：「東京」　（括弧との四分・二分ツメ）", False),
-                                 ("連続約物： 「「連続開き括弧」」。（閉じ括弧と句点）", False),
-                                 ("句点＋全角空白： 東京都。　次の段落（句点余白＋全角空白のアキ量確認）", True),
-                                 ("約物混在： 開き「　全角スペース　」閉じ、　読点と空白、", False)]):
-        c_els.append(("t", sr, s, 20 if i < 4 else 18, (65, 200 + i * 45), (220, 38, 38) if hi else (51, 65, 85), {"chws": False}))
-        c_els.append(("t", sb if hi else sr, s, 20 if i < 4 else 18, (65, 570 + i * 45), (16, 185, 129) if hi else (15, 23, 42), {"chws": True}))
-    out.append(_render_card(SPECIMENS_DIR / "specimen_chws_comparison.png", 1200, 870, "Holon Sans — 約物半角ツメ（chws）＆ 空白検証", sb, c_els))
-
-    s_top, s_bot = "日本語も英語も美しく傾斜。Holon Sans: Expressive typography with 11° slant. 0123456789", "「吾輩は猫である。名前はまだ無い。」 The quick brown fox jumps over the lazy dog."
-    out.append(_render_card(SPECIMENS_DIR / "specimen_italic_oblique.png", 1200, 560, "Holon Sans — 和文イタリック（11.0° オブリーク傾斜）", sb, [
-        ("rect", [(40, 115), (1160, 305)], (255, 255, 255), (226, 232, 240)), ("t", sb, "Regular (直立・Upright)", 16, (65, 150), (37, 99, 235)),
-        ("t", sr, s_top, 22, (65, 205)), ("t", sr, s_bot, 19, (65, 250), (71, 85, 105)),
-        ("rect", [(40, 325), (1160, 515)], (255, 255, 255), (147, 51, 234), 2), ("t", sb, "Italic (欧文イタリック ＋ 和文11.0° オブリーク)", 16, (65, 360), (147, 51, 234)),
-        ("t", si, s_top, 22, (65, 415)), ("t", si, s_bot, 19, (65, 460), (71, 85, 105)),
-    ]))
-
-    v_cols = [(1080, "『ホロン・サンズ』縦書きの美学。"), (1015, "国境を越え、文字と文字が響き合う。"), (950, "「吾輩は猫である。名前はまだ無い。"), (885, "どこで生れたかとんと見当がつかぬ。"),
-              (820, "何でも薄暗いじめじめした所で"), (755, "ニャーニャー泣いていた事だけは記憶している。」"), (690, "縦書き約物テスト：「（東京都）」ー新宿・渋谷。"), (625, "項目１：定義；項目２：検証；結び。・：；")]
-    v_els = [("rect", [(40, 115), (1160, 795)], (255, 255, 255), (226, 232, 240)),
-             ("t", sb, "縦書きフィーチャー（vert / vrt2）および縦約物ツメ（vchw）による完全対応", 16, (65, 150), (37, 99, 235))] + [
-        ("t", sr, txt, 23, (x, 225), (15, 23, 42), None, None, True) for x, txt in v_cols
-    ] + [("rect", [(440, 195), (595, 755)], (248, 250, 252), (226, 232, 240)),
-         ("t", sb, "vchw ON", 14, (525, 225), (37, 99, 235)), ("t", sb, "vchw OFF", 14, (452, 225), (220, 38, 38)),
-         ("t", sb, "「『連続』」。・：；「・」", 22, (555, 260), (37, 99, 235), {"vert": True, "vchw": True}, None, True),
-         ("t", sr, "「『連続』」。・：；「・」", 22, (480, 260), (220, 38, 38), {"vert": True, "vchw": False}, None, True)]
-    out.append(_render_card(SPECIMENS_DIR / "specimen_vertical.png", 1200, 840, "Holon Sans — 縦書き組版（vert・vrt2・vchw 対応）", sb, v_els))
-
-    var_els = [
-        ("rect", [(40, 115), (1360, 480)], (255, 255, 255), (226, 232, 240)),
-        ("t", sb, "1. 直立バリアブルフォント（HolonSans-Variable.otf）: 全7ウエイト段階補間スペクトラム", 16, (65, 145), (37, 99, 235)),
-        ("rect", [(40, 500), (1360, 865)], (255, 255, 255), (226, 232, 240)),
-        ("t", sb, "2. イタリックバリアブルフォント（HolonSans-Italic-Variable.otf）: 和欧11.0°傾斜 全7ウエイト補間", 16, (65, 530), (147, 51, 234)),
+    generators = [
+        ("specimen_sans_weights.png", render_sans_weights),
+        ("specimen_sans_chws.png", render_sans_chws),
+        ("specimen_sans_vertical.png", render_sans_vertical),
+        ("specimen_sans_variable.png", render_sans_variable),
+        ("specimen_sans_features.png", render_sans_features),
+        ("specimen_mono_weights.png", render_mono_weights),
+        ("specimen_mono_duospace.png", render_mono_duospace),
+        ("specimen_mono_box_drawing.png", render_mono_box_drawing),
+        ("specimen_mono_variable.png", render_mono_variable),
+        ("specimen_mono_code.png", render_mono_code),
     ]
-    wght_spectrum = [(100, "Thin (100)"), (200, "ExtraLight (200)"), (300, "Light (300)"), (400, "Regular (400)"),
-                     (500, "Medium (500)"), (600, "SemiBold (600)"), (700, "Bold (700)")]
-    for i, (w_val, label) in enumerate(wght_spectrum):
-        y_r, y_i = 180 + i * 40, 565 + i * 40
-        var_els.append(("t", sr, f"{label:<16}", 12, (65, y_r + 2), (100, 116, 139)))
-        var_els.append(("t", sv, "a w x v y  A B C  0 1 8  あいうえお  森国鬱  The quick brown fox", 18, (210, y_r), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}))
-        var_els.append(("t", sr, f"{label:<16}", 12, (65, y_i + 2), (100, 116, 139)))
-        var_els.append(("t", siv, "a w x v y  A B C  0 1 8  あいうえお  森国鬱  The quick brown fox", 18, (210, y_i), (15, 23, 42), None, {"wght": w_val, "GRAD": 0}))
-
-    var_els.extend([
-        ("rect", [(40, 885), (1360, 1185)], (255, 255, 255), (226, 232, 240)),
-        ("t", sb, "3. Grade 軸（GRAD: -100 〜 +100）— レイアウト固定の精密太さ調整", 16, (65, 915), (217, 119, 6)),
-        ("rect", [(65, 965), (685, 1155)], (248, 250, 252), (226, 232, 240)),
-        ("t", sv, "白背景の標準ウェイト (GRAD: 0)。レイアウト完全維持。", 15, (85, 1035), (15, 23, 42), None, {"wght": 400, "GRAD": 0}),
-        ("t", sv, "GRAD: +100 で視認性向上: 細部の線の太さのみが増加。", 14, (85, 1085), (15, 23, 42), None, {"wght": 400, "GRAD": 100}),
-        ("rect", [(715, 965), (1335, 1155)], (15, 23, 42)),
-        ("t", sv, "黒背景で光の膨張を抑え、すっきり可読性を保つ (GRAD: -100)。", 15, (735, 1035), (241, 245, 249), None, {"wght": 400, "GRAD": -100}),
-    ])
-    out.append(_render_card(SPECIMENS_DIR / "specimen_variable_spectrum.png", 1400, 1230, "Holon Sans — 2ファイル分離バリアブルフォント（全ウエイト段階補間）", sb, var_els))
-
-    cjk_els = [("rect", [(40, 115), (1160, 575)], (255, 255, 255), (226, 232, 240)),
-               ("t", sb, "JIS X 0213 固有互換漢字（﨑・福・諸 等）＋ 非JIS CJK互換漢字 346字 ＝ 計468字完全網羅", 16, (65, 160), (37, 99, 235)),
-               ("t", sr, "人名・地名・公文書等で用いられる互換漢字（U+F900..U+FAFF）の豆腐化（.notdef）を完全に防止します。", 14, (65, 193), (71, 85, 105))]
-    for idx, (cp_s, can_s, ch) in enumerate([("U+F900 豈", "U+8C48 豈", "豈"), ("U+F901 更", "U+66F4 更", "更"), ("U+F902 車", "U+8ECA 車", "車"),
-                                             ("U+F904 滑", "U+6ED1 滑", "滑"), ("U+F90A 金", "U+91D1 金", "金"), ("U+FA11 﨑", "U+5D0E 崎", "﨑"),
-                                             ("U+FA15 凞", "U+7199 熙", "凞"), ("U+FA1F 﨟", "U+814B 臘", "﨟"), ("U+FA20 蘒", "U+874E 蝋", "蘒"), ("U+FA22 諸", "U+8AF8 諸", "諸")]):
-        cx, cy = 65 + (idx % 2) * 540, 225 + (idx // 2) * 60
-        cjk_els.extend([("rect", [(cx, cy), (cx + 520, cy + 50)], (248, 250, 252), (226, 232, 240)), ("t", sb, ch, 28, (cx + 15, cy + 38), (37, 99, 235)),
-                        ("t", sb, f"互換字: {cp_s}", 13, (cx + 65, cy + 28)), ("t", sr, f"正規字: {can_s}", 13, (cx + 250, cy + 28), (100, 116, 139))])
-    out.append(_render_card(SPECIMENS_DIR / "specimen_cjk_compat.png", 1200, 620, "Holon Sans — CJK 互換漢字拡張検証", sb, cjk_els))
-
-    rep_els = []
-    for i, (title, samp) in enumerate([("ASCII & 欧文基本記号", "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"),
-                                       ("全角英数・全角記号 (JIS X 0208)", "０１２３４５６７８９ ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ ＋−＝＜＞！＠＃＄％＆＊"),
-                                       ("ひらがな・カタカナ・半角カナ", "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん アイウエオ ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉ"),
-                                       ("約物・括弧類・句読点", "「」『』【】〔〕〈〉《》“”…―〜・：；、。！？（）［］｛｝※〒→←↑↓"),
-                                       ("多言語（ギリシャ・キリル・通貨記号）", "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣＴΥΦΧΨΩ αβγδεζηθικλμνξοπρστυφχψω БГДЖЗИЙЛПФЦЧШЩЪЫЬЭЮЯ бгджзийли $ € ¥ £ ₽ ₩ ฿ ¢"),
-                                       ("常用漢字・難読・人名用・異体字", "森羅万象 鬱蒼 髑髏 薔薇 檸檬 麒麟 翡翠 躊躇 挨拶 邂逅 魑魅魍魎 葛飾 祇園 茨城 辻堂 鷗外 髙橋 﨑山 諸星 福島")]):
-        cy = 115 + i * 135
-        rep_els.extend([("rect", [(40, cy), (1360, cy + 115)], (255, 255, 255), (226, 232, 240)), ("t", sb, title, 15, (65, cy + 32), (37, 99, 235)), ("t", sr, samp, 16, (65, cy + 75))])
-    out.append(_render_card(SPECIMENS_DIR / "specimen_character_repertoire.png", 1400, 980, "Holon Sans — 包括的文字種別レパートリー検証", sb, rep_els))
-
-    mono_els = [("t", mr, "Half: 550 UPM | Full: 1100 UPM", 16, (1060, 48), (139, 148, 158)),
-                ("lines", mr, ["// Rust: Holon Mono は和欧 2:1 等幅なので、インデントや列が完全一致します", "use std::collections::HashMap; pub struct UserProfile {",
-                               "    pub user_id:   u64,           // 一意識別子 (64bit integer)", "    pub full_name: String,        // 氏名（全角漢字・仮名対応）",
-                               '    pub role_code: &\'static str,  // 権限グループ: "ADMIN" | "USER"', "    pub is_active: bool,          // 有効フラグ: true = 稼働中", "}"], 18, 60, 140, 30, (240, 246, 252)),
-                ("lines", mr, ["┌──────┬────────────┬────────────────────────┬────────┬──────────┐", "│ ID   │ 氏名       │ 所属部署・担当領域     │ 権限   │ 状態     │",
-                               "├──────┼────────────┼────────────────────────┼────────┼──────────┤", "│ 0101 │ 田中　太郎 │ フロントエンド基盤開発 │ ADMIN  │ 稼働中   │",
-                               "│ 0102 │ 鈴木　一郎 │ クラウドインフラ統括   │ ADMIN  │ 稼働中   │", "│ 0103 │ 佐藤　健一 │ 自然言語処理モデル評価 │ MEMBER │ 離席中   │",
-                               "│ 0104 │ 高橋　美咲 │ セキュリティ監査・運用 │ MEMBER │ 休暇中   │", "└──────┴────────────┴────────────────────────┴────────┴──────────┘"], 18, 60, 440, 21, (126, 231, 135))]
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_duospace.png", 1440, 800, "Holon Mono — 2:1 Duospace Programming Specimen", mr, mono_els, dark=True))
-
-    it_els = []
-    for i, (title, fp) in enumerate([("Regular (Upright)", mr), ("Italic (Native Latin Italic + 9.0° Slanted CJK)", mi)]):
-        cy = 115 + i * 180
-        it_els.extend([("rect", [(50, cy), (1390, cy + 36)], (33, 38, 45)), ("t", fp, title, 16, (65, cy + 25), (88, 166, 255)),
-                       ("lines", fp, ['const message: &str = "Hello, 世界！"; // 厳密な 2:1 等幅モノスペース', "for item in &dataset { process_record(item); } // レコード処理ルーチン",
-                                      "The quick brown fox jumps over the lazy dog. 0123456789"], 20, 65, cy + 55, 38, (240, 246, 252))])
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_italic.png", 1440, 720, "Holon Mono — Upright vs Italic Comparison", mr, it_els, dark=True))
-
-    mw_els = [("t", mr, f"{wn:<10} ({wv})", 15, (55, 133 + i * 52), (88, 166, 255)) for i, (wn, wv) in enumerate(WEIGHT_VALS.items()) if (fonts_dir / f"HolonMono-{wn}.ttf").exists()]
-    for i, (wn, _) in enumerate(WEIGHT_VALS.items()):
-        wp = fonts_dir / f"HolonMono-{wn}.ttf"
-        if wp.exists():
-            mw_els.append(("t", wp, "Sphinx of black quartz, judge my vow. // 銀河鉄道の夜 0123456789", 18, (240, 133 + i * 52), (240, 246, 252)))
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_weights.png", 1440, 620, "Holon Mono — 8 Weight Family Spectrum", mr, mw_els, dark=True))
-
-    mv_els = [("t", mr, "2-File Architecture (Roman / Italic)", 15, (1100, 48), (139, 148, 158)),
-              ("rect", [(50, 110), (1390, 470)], (24, 29, 36), (48, 54, 61)), ("t", mr, "1. Weight 軸（wght: 100 〜 700）無段階連続変化 — 厳密 2:1 幅維持", 16, (75, 135), (88, 166, 255))]
-    for i, (wval, lbl) in enumerate([(100, "Thin 100"), (250, "Wght 250"), (400, "Regular 400"), (550, "Wght 550"), (700, "Bold 700")]):
-        mv_els.extend([("t", mr, f"{lbl:<12}", 14, (75, 187 + i * 48), (139, 148, 158)), ("t", mv, "fn calc(x: i32) -> i32 { x * 2 } // 厳密な 550/1100 UPM 列位置完全一致", 18, (230, 187 + i * 48), (240, 246, 252), None, {"wght": wval, "GRAD": 0})])
-    mv_els.extend([("rect", [(50, 500), (1390, 910)], (24, 29, 36), (48, 54, 61)), ("t", mr, "2. Grade 軸（GRAD: -100 〜 +100）— 送り幅を 1px も変えない線の太さ光学補正", 16, (75, 525), (126, 231, 135)),
-                   ("rect", [(75, 560), (700, 880)], (255, 255, 255)), ("t", mr, "ライトモード表示 (GRAD: 0..+100)", 14, (95, 585), (15, 23, 42)),
-                   ("t", mv, 'let msg = "Hello, 世界！";', 18, (95, 665), (15, 23, 42), None, {"wght": 400, "GRAD": 0}), ("t", mv, 'let msg = "Hello, 世界！";', 18, (95, 775), (15, 23, 42), None, {"wght": 400, "GRAD": 100}),
-                   ("rect", [(740, 560), (1365, 880)], (13, 17, 23)), ("t", mr, "ダークモード光学補正 (GRAD: -100)", 14, (760, 585), (240, 246, 252)),
-                   ("t", mv, 'let msg = "Hello, 世界！";', 18, (760, 665), (240, 246, 252), None, {"wght": 400, "GRAD": 0}), ("t", mv, 'let msg = "Hello, 世界！";', 18, (760, 775), (240, 246, 252), None, {"wght": 400, "GRAD": -100})])
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_variable.png", 1440, 960, "Holon Mono Variable — Weight & Grade Axis Specimen", mr, mv_els, dark=True))
-
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_code_programming.png", 1440, 920, "Holon Mono — 実践プログラミングコード・演算子記号組版", mr, [
-        ("t", mr, "Rust / TypeScript 2:1 Duospace", 16, (1100, 48), (139, 148, 158)),
-        ("rect", [(50, 115), (1390, 151)], (33, 38, 45)), ("t", mr, "Rust: パターンマッチングとエラー処理 (演算子: =>, ->, ::, ?)", 15, (65, 140), (88, 166, 255)),
-        ("rect", [(50, 165), (1390, 395)], (13, 17, 23)),
-        ("lines", mr, ['match fetch_user_record(&db_pool, user_id).await {', '    Ok(Some(record)) if record.is_active => {',
-                       '        let token: String = auth::generate_session(&record)?; // 認証トークン生成', '        println!("[SUCCESS] ユーザー {} がログインしました", record.name);',
-                       '        Ok(HttpResponse::Ok().json(token))', '    }', '    _ => Err(AppError::Unauthorized("無効な認証資格情報です")),', '}'], 17, 70, 187, 26, (240, 246, 252)),
-        ("rect", [(50, 430), (1390, 466)], (33, 38, 45)), ("t", mr, "TypeScript: ジェネリクスと非同期処理 (演算子: ===, !==, <=, >=, ??, =>)", 15, (65, 455), (88, 166, 255)),
-        ("rect", [(50, 480), (1390, 680)], (13, 17, 23)),
-        ("lines", mr, ['export async function queryMetrics<T extends DataRecord>(endpoint: string, options?: RequestConfig): Promise<QueryResult<T>> {',
-                       '  const res = await fetch(`${API_BASE}/${endpoint}`, { ...options });', '  if (res.status !== 200) throw new HttpError(res.statusText ?? "通信エラー");',
-                       '  return await res.json() as QueryResult<T>; // 和欧混植コメント完全整列', '}'], 17, 70, 502, 26, (240, 246, 252)),
-    ], dark=True))
-
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_terminal_tui.png", 1440, 680, "Holon Mono — ターミナル TUI & システムステータス", mr, [
-        ("lines", mr, ["→  holon git:(main) git status (working tree clean)", "→  holon systemctl status holon-duospace", "● holon-duospace.service - Holon Duospace Font Engine (Active: running)"], 18, 50, 115, 28, (240, 246, 252)),
-        ("lines", mr, ["┌──────────────────────────────────┬───────────┬───────────────┬────────────────────────┐",
-                       "│ サービス名                       │ ステータス│ 応答速度(RTT) │ 稼働ホスト             │",
-                       "├──────────────────────────────────┼───────────┼───────────────┼────────────────────────┤",
-                       "│ 認証・セッション管理基盤 (OAuth) │ [ 稼働中 ]│ 0.62 ms       │ ap-northeast-1a-prod-1 │",
-                       "│ ベクトル検索エンジン (Qdrant)    │ [ 稼働中 ]│ 4.18 ms       │ ap-northeast-1c-prod-4 │",
-                       "│ 非同期ジョブキュー (BullMQ)      │ [ 稼働中 ]│ 1.05 ms       │ ap-northeast-1d-prod-2 │",
-                       "└──────────────────────────────────┴───────────┴───────────────┴────────────────────────┘"], 18, 50, 240, 21, (126, 231, 135)),
-    ], dark=True))
-
-    out.append(_render_card(SPECIMENS_DIR / "specimen_mono_box_drawing_matrix.png", 1440, 620, "Holon Mono — 罫線・ブロック要素全種接続マトリクス", mr, [
-        ("lines", mr, ["// 1. 単線・二重線・太線・角丸の組み合わせと交差", "┌─┬─┐ ┏━┳━┓ ╔═╦═╗ ╭─┬─╮ ┌┬┐ ┏┳┓ ╔╦╗ ╭┬╮",
-                       "│ │ │ ┃ ┃ ┃ ║ ║ ║ │ │ │ ├┼┤ ┣╋┫ ╠╬╣ ├┼┤", "├─┼─┤ ┣━╋━┫ ╠═╬═╣ ├─┼─┤ └┴┘ ┗┻┛ ╚╩╝ ╰┴╯",
-                       "└─┴─┘ ┗━┻━┛ ╚═╩═╝ ╰─┴─╯  ※ すべての角と交差点が 1px の隙間なく連結"], 18, 60, 125, 21, (126, 231, 135)),
-        ("lines", mr, ["// 2. ブロック要素（U+2580..U+259F）とプログレスバー", "█ ▀ ▄ ▌ ▐ ░ ▒ ▓   ▂ ▃ ▄ ▅ ▆ ▇ █ ▏ ▎ ▍ ▌ ▋ ▊ ▉ █",
-                       "[████████████████████████████████████████████████████████] 100% Complete",
-                       "[████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  35% Initializing"], 18, 60, 260, 28, (126, 231, 135)),
-    ], dark=True))
-
-    out.append(generate_all_glyphs_contact_sheet(sv, SPECIMENS_DIR / "specimen_all_glyphs_sans.png", "Holon Sans — 全グリフコンタクトシート (Complete Repertoire Contact Sheet)"))
-    out.append(generate_all_glyphs_contact_sheet(mr, SPECIMENS_DIR / "specimen_all_glyphs_mono.png", "Holon Mono — 全グリフコンタクトシート (Complete Repertoire Contact Sheet)"))
+    out = []
+    for fname, gen in generators:
+        p = gen(fonts_dir, SPECIMENS_DIR / fname)
+        out.append(p)
     return out
 
 
@@ -810,7 +1207,8 @@ def test_specimen_generation(fonts_dir: Path, pytestconfig: pytest.Config) -> No
     if not pytestconfig.getoption("--specimens", default=False):
         pytest.skip("Specimen generation skipped (run with --specimens)")
     paths = generate_all_specimens(fonts_dir)
-    assert len(paths) == 16 and all(p.exists() and p.stat().st_size > 10_000 for p in paths)
+    assert len(paths) == 10 and all(p.exists() and p.stat().st_size > 10_000 for p in paths)
+
 
 
 if __name__ == "__main__":
