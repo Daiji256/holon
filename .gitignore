@@ -1,6 +1,5 @@
-# Temporary & scratch directories
+# Temporary directory
 tmp/
-scratch/
 
 # Generated fonts (do not commit until finished)
 *.ttf

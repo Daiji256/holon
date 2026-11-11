@@ -13,12 +13,11 @@
 from __future__ import annotations
 
 import collections
+import hashlib
 import itertools
-import os
 import sys
 import unicodedata
 from pathlib import Path
-from typing import Any
 
 import freetype
 import pytest
@@ -103,7 +102,7 @@ def draw_text_hb(img: Image.Image, p: Path, text: str, sz: int, pos: tuple[int, 
         if bm.width > 0 and bm.rows > 0:
             gx = pos[0] + round((x_cur + pos_i.x_offset) * sz / 1000) + face.glyph.bitmap_left
             gy = pos[1] + round((y_cur - pos_i.y_offset) * sz / 1000) - face.glyph.bitmap_top
-            img.paste(Image.new("RGBA", (bm.width, bm.rows), col + (255,)), (gx, gy), Image.frombytes("L", (bm.width, bm.rows), bytes(bm.buffer)))
+            img.paste(Image.new("RGBA", (bm.width, bm.rows), (*col, 255)), (gx, gy), Image.frombytes("L", (bm.width, bm.rows), bytes(bm.buffer)))
         x_cur += pos_i.x_advance
         y_cur -= pos_i.y_advance
     return round(y_cur * sz / 1000) if vert else round(x_cur * sz / 1000)
@@ -117,16 +116,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 @pytest.fixture(scope="session")
 def fonts_dir(pytestconfig: pytest.Config) -> Path:
     cli_dir = pytestconfig.getoption("--fonts-dir", default=None)
-    if cli_dir:
-        p = Path(cli_dir)
-    else:
-        env_dir = os.environ.get("HOLON_FONTS_DIR")
-        if env_dir:
-            p = Path(env_dir)
-        elif Path("fonts/full").is_dir():
-            p = Path("fonts/full")
-        else:
-            p = Path("fonts")
+    p = Path(cli_dir) if cli_dir else Path("fonts/full")
     assert p.is_dir(), f"Fonts dir not found: {p}"
     return p
 
@@ -221,15 +211,15 @@ def test_unique_identifiers_and_family_metrics(fonts_dir: Path) -> None:
         assert all(m == ref_m for m in fmap.values()), f"{fam} vertical metrics mismatch"
 
 
-def test_ofl_license_text(fonts_dir: Path) -> None:
-    ofl_p = fonts_dir / "OFL.txt" if (fonts_dir / "OFL.txt").exists() else Path("OFL.txt")
-    if not ofl_p.exists():
-        pytest.skip("OFL.txt not present")
+def test_ofl_license_text() -> None:
+    ofl_p = Path("OFL.txt")
+    assert ofl_p.exists(), "Root OFL.txt must exist"
     content = ofl_p.read_bytes()
-    assert b"SIL OPEN FONT LICENSE Version 1.1" in content and b"Daiji Suzuki" in content
-    lic_src = Path("tmp/plex/packages/plex-sans-jp/LICENSE.txt")
-    if lic_src.exists():
-        assert lic_src.read_bytes() in content
+    prefix = b"Copyright 2026 Daiji Suzuki.\r\n"
+    assert content.startswith(prefix)
+    upstream_part = content.removeprefix(prefix)
+    assert b"SIL OPEN FONT LICENSE Version 1.1" in upstream_part
+    assert hashlib.sha256(upstream_part).hexdigest() == "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
 
 
 # --- 2. Glyph Bounds, Clipping, Repertoire & Authentic Italic ---
@@ -449,7 +439,6 @@ def test_sans_gpos_and_gsub_feature_parity(fonts_dir: Path, sname: str) -> None:
     info_slashed, pos_slashed = shape(p, "0", feat={"zero": True})
     assert info_plain[0].codepoint != info_slashed[0].codepoint
     assert pos_plain[0].x_advance == pos_slashed[0].x_advance == 612
-
 
 
 # --- 5. Variable Fonts: fvar, avar, STAT, GRAD & Static Parity ---
@@ -810,20 +799,20 @@ def render_sans_features(fonts_dir: Path, out_path: Path) -> Path:
     # Section 1: CJK Compatibility Kanji
     draw_text_hb(img, sb, "1. CJK Compatibility Kanji Mappings (U+F900..U+FAFF) — No Missing Glyphs", 13, (48, 120), col=(55, 65, 81))
     compat_samples = [
-        ("崎", "﨑", "U+FA11\n→ 﨑 (U+5D0E)"),
-        ("凞", "凞", "U+FA15\n→ 熙 (U+7199)"),
-        ("藹", "﨟", "U+FA1F\n→ 﨟 (U+814B)"),
-        ("穐", "蘒", "U+FA20\n→ 鵺 (U+874E)"),
-        ("諸", "諸", "U+FA22\n→ 諸 (U+8AF8)"),
-        ("豈", "豈", "U+F900\n→ 豈 (U+8C48)"),
-        ("更", "更", "U+F901\n→ 更 (U+66F4)"),
-        ("車", "車", "U+F902\n→ 車 (U+8ECA)"),
-        ("滑", "滑", "U+F904\n→ 滑 (U+6ED1)"),
-        ("金", "金", "U+F90A\n→ 金 (U+91D1)"),
+        ("﨑", "U+FA11\ncf. 崎 (U+5D0E)"),
+        ("凞", "U+FA15\ncf. 凞 (U+51DE)"),
+        ("﨟", "U+FA1F\ncf. 臈 (U+81C8)"),
+        ("蘒", "U+FA20\ncf. 蘒 (U+8612)"),
+        ("諸", "U+FA22\ncf. 諸 (U+8AF8)"),
+        ("豈", "U+F900\n→ 豈 (U+8C48)"),
+        ("更", "U+F901\n→ 更 (U+66F4)"),
+        ("車", "U+F902\n→ 車 (U+8ECA)"),
+        ("滑", "U+F904\n→ 滑 (U+6ED1)"),
+        ("金", "U+F90A\n→ 金 (U+91D1)"),
     ]
     cx = 48
     cy = 160
-    for idx, (label, ch, desc) in enumerate(compat_samples):
+    for idx, (ch, desc) in enumerate(compat_samples):
         draw_text_hb(img, sb, ch, 28, (cx, cy), col=(17, 24, 39))
         lines = desc.split("\n")
         draw_text_hb(img, sb, lines[0], 11, (cx + 44, cy + 2), col=(17, 24, 39))
@@ -850,7 +839,7 @@ def render_sans_features(fonts_dir: Path, out_path: Path) -> Path:
     rep_items = [
         ("Currencies", "$ 628,000  € 450,000  ¥ 1,280,000  £ 380,000  ₽ 500,000  ₴ 240,000  ₩ 890,000"),
         ("Diacritics", "Ångström, café, naïve, façade, Zürich, Łódź, São Paulo, Đà Nẵng, Miloš, Gödel"),
-        ("Cyrillic", "Съешь же ещё death мягких французских булок, da выпей чаю. (Привет, мир!)"),
+        ("Cyrillic", "Съешь же ещё этих мягких французских булок, да выпей чаю. (Привет, мир!)"),
         ("Greek", "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ  αβγδεζηθικλμνξοπρστυφχψω"),
         ("Punctuation", "「」『』【】〔〕〈〉《》“”…―〜・：；、。！？（）［］｛｝※〒→←↑↓"),
         ("Kanji", "森羅万象 鬱蒼 髑髏 薔薇 檸檬 麒麟 翡翠 躊躇 挨拶 邂逅 魑魅魍魎 葛飾 祇園 茨城 辻堂 鷗外 髙橋"),
@@ -909,11 +898,11 @@ def render_mono_duospace(fonts_dir: Path, out_path: Path) -> Path:
 
     # Section 1: Column alignment grid
     draw_text_hb(img, mb, "1. Column Alignment & Metric Ratio Verification", 13, (48, 120), col=(55, 65, 81))
-    ruler = "0----+----1----+----2----+----3----+----4----+----5----+----6----+----7----+----8"
+    ruler =      "----+----1----+----2----+----3----+----4----+----5----+----6----+----7----+----8"
     ascii_line = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefgh"
-    hankaku_k =  "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾜｦﾝ0123456789abcdefghijklmnopqr"
+    hankaku_k =  "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜｦﾝ0123456789abcdefghijklmnopqrstuvwx"
     kana_line =  "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらり"
-    kanji_line = "森羅万象春夏秋冬東西南北天地玄黄宇宙洪荒日月盈昃辰宿列張寒来暑往秋収冬蔵閏余成"
+    kanji_line = "森羅万象春夏秋冬東西南北天地玄黄宇宙洪荒日月盈昃辰宿列張寒来暑往秋収冬蔵閏余成歳"
 
     y = 150
     draw_text_hb(img, mr, ruler, 14, (48, y), col=(156, 163, 175))
@@ -1208,7 +1197,6 @@ def test_specimen_generation(fonts_dir: Path, pytestconfig: pytest.Config) -> No
         pytest.skip("Specimen generation skipped (run with --specimens)")
     paths = generate_all_specimens(fonts_dir)
     assert len(paths) == 10 and all(p.exists() and p.stat().st_size > 10_000 for p in paths)
-
 
 
 if __name__ == "__main__":

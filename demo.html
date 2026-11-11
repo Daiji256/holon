@@ -137,9 +137,8 @@ The quick brown fox jumps over the lazy dog. 0123456789
       p.style.fontVariationSettings = `'wght' ${w.value}, 'GRAD' ${g.value}`;
 
       const feats = [];
-      if (ch.checked) feats.push('"chws" 1');
+      if (ch.checked) feats.push(v.checked ? '"vchw" 1' : '"chws" 1');
       if (z.checked) feats.push('"zero" 1');
-      if (v.checked) feats.push('"vchw" 1');
       p.style.fontFeatureSettings = feats.length ? feats.join(', ') : 'normal';
 
       p.classList.toggle('vertical', v.checked);

@@ -16,10 +16,10 @@
 Features:
 - Automatic upstream download pinned by immutable Git commit hash & release tags with SHA-256 verification
 - Holon Sans: Dual-scale (Japanese CJK 0.97x, Latin/symbols 1.02x), 11.0° Italic, JIS X 4051 chws/vchw
-- Holon Sans Variable: 2-file Variable Fonts (Roman & Italic) with wght (100..700), GRAD (-100..+100), avar, and full GPOS
 - Holon Mono: Strict 2:1 duospace (550 / 1100 UPM), 9.0° Italic, box-drawing alignment, terminal metrics
+- Variable Fonts: 2-file Roman & Italic architecture for Sans & Mono with wght (100..700), GRAD (-100..+100), and avar
 - Subsetter, post 3.0, GDEF/STAT synthesis, and modal-advance glyph order clustering for compact hmtx/vmtx/HVAR/VVAR
-- Strict compliance with SIL OFL 1.1 metadata and naming requirements
+- Reproducible builds (SOURCE_DATE_EPOCH) and strict compliance with SIL OFL 1.1 metadata and naming requirements
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ import hashlib
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -45,13 +46,22 @@ import cffsubr
 import ufo2ft
 import ufoLib2
 from east_asian_spacing import Builder, Config
-from fontTools.designspaceLib import AxisDescriptor, DesignSpaceDocument, InstanceDescriptor, SourceDescriptor
+from fontTools.designspaceLib import (
+    AxisDescriptor,
+    DesignSpaceDocument,
+    InstanceDescriptor,
+    SourceDescriptor,
+)
 from fontTools.otlLib.builder import buildStatTable, buildValue
 from fontTools.otlLib.optimize import compact as compact_otl
-from fontTools.pens.recordingPen import DecomposingRecordingPen, DecomposingRecordingPointPen
+from fontTools.pens.recordingPen import (
+    DecomposingRecordingPen,
+    DecomposingRecordingPointPen,
+)
 from fontTools.pens.transformPen import TransformPen, TransformPointPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.subset import Options as SubsetOptions, Subsetter
+from fontTools.subset import Options as SubsetOptions
+from fontTools.subset import Subsetter
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
@@ -104,6 +114,7 @@ OUTPUT_DIR, SUBSET_DIR, TMP_DIR = Path("fonts/full"), Path("fonts/subset"), Path
 # --- Deterministic Build Timestamp (Reproducible Builds) ---
 
 DEFAULT_BUILD_EPOCH = 1767225600  # 2026-01-01 00:00:00 UTC
+_BUILD_STATE: dict[str, int | None] = {"unix_ts": None, "mac_ts": None}
 
 
 def get_git_commit_timestamp() -> int | None:
@@ -143,27 +154,26 @@ def resolve_build_timestamp(explicit: int | None = None) -> int:
     return DEFAULT_BUILD_EPOCH
 
 
-def unix_to_mac_epoch(unix_ts: int) -> int:
-    """Convert Unix epoch seconds to OpenType Mac epoch seconds (seconds since 1904-01-01)."""
-    return unix_ts - mac_epoch_diff
-
-
-CURRENT_BUILD_UNIX_TS = resolve_build_timestamp()
-CURRENT_BUILD_MAC_TS = unix_to_mac_epoch(CURRENT_BUILD_UNIX_TS)
-os.environ["SOURCE_DATE_EPOCH"] = str(CURRENT_BUILD_UNIX_TS)
-
-
-def set_global_build_timestamp(unix_ts: int) -> None:
-    """Set global deterministic build timestamp from CLI or caller."""
-    global CURRENT_BUILD_UNIX_TS, CURRENT_BUILD_MAC_TS
-    CURRENT_BUILD_UNIX_TS = unix_ts
-    CURRENT_BUILD_MAC_TS = unix_to_mac_epoch(unix_ts)
+def configure_build_timestamp(explicit: int | None = None) -> int:
+    """Configure deterministic build timestamp for the current process and return Unix epoch."""
+    unix_ts = resolve_build_timestamp(explicit)
+    _BUILD_STATE["unix_ts"] = unix_ts
+    _BUILD_STATE["mac_ts"] = unix_ts - mac_epoch_diff
     os.environ["SOURCE_DATE_EPOCH"] = str(unix_ts)
+    return unix_ts
+
+
+def get_build_mac_timestamp() -> int:
+    """Return active OpenType Mac epoch timestamp, initializing lazily if needed."""
+    if _BUILD_STATE["mac_ts"] is None:
+        configure_build_timestamp()
+    assert _BUILD_STATE["mac_ts"] is not None
+    return _BUILD_STATE["mac_ts"]
 
 
 def set_font_deterministic_timestamp(font: TTFont, mac_ts: int | None = None) -> None:
     """Ensure font has deterministic timestamp and disables automatic recalculation on save."""
-    ts = mac_ts if mac_ts is not None else CURRENT_BUILD_MAC_TS
+    ts = mac_ts if mac_ts is not None else get_build_mac_timestamp()
     font.recalcTimestamp = False
     if "head" in font:
         font["head"].created = ts
@@ -174,10 +184,8 @@ SUBSET_CHARACTERS = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXY
 # --- Pinned Upstream Sources & SHA-256 Checksums ---
 
 UPSTREAM_PLEX_COMMIT = "71f558992315a12ca1f06a2215d57962a1992162"
-UPSTREAM_JP_LICENSE_REL = "plex-sans-jp/LICENSE.txt"
 
 TTF_SHA256: dict[str, str] = {
-    UPSTREAM_JP_LICENSE_REL: "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
     # IBM Plex Sans (16 styles)
     "plex-sans/fonts/complete/ttf/IBMPlexSans-Thin.ttf": "d2fdd87b43039f5e05c7749b6b7937837d074bbf14af2d26dba09b67abf6aca1",
     "plex-sans/fonts/complete/ttf/IBMPlexSans-ThinItalic.ttf": "e1056650d0a4511372fa44f539a65c92e2ede7fe19ff5560c05e4490275c41a8",
@@ -312,16 +320,6 @@ def ensure_variable_sources(for_family: str = "sans") -> tuple[Path, Path]:
     return ensure_zip_source("sans-jp"), ensure_zip_source("mono-variable" if for_family == "mono" else "sans-variable").parent
 
 
-def ensure_root_ofl_license() -> Path:
-    """Ensure upstream LICENSE.txt is verified and sync root OFL.txt verbatim if missing."""
-    root_ofl = Path("OFL.txt")
-    if not root_ofl.exists():
-        lic_path = ensure_ttf_source(UPSTREAM_JP_LICENSE_REL)
-        lic_bytes = b"Copyright 2026 Daiji Suzuki.\r\n" + lic_path.read_bytes()
-        root_ofl.write_bytes(lic_bytes)
-    return root_ofl
-
-
 # --- Shared Glyph, Transform & OpenType Helpers ---
 
 def is_cjk_glyph(gname: str, u: int | None = None, box_is_latin: bool = False) -> bool:
@@ -440,17 +438,16 @@ def _cjk_compat_pairs(known_codes) -> dict[int, int]:
     }
 
 
-def add_cjk_compatibility_mappings(font_jp: TTFont) -> int:
+def add_cjk_compatibility_mappings(font_jp: TTFont) -> None:
     """Map missing CJK Compatibility Ideographs (U+F900..U+FAFF) to canonical unified ideographs."""
     cmap_jp = font_jp.getBestCmap()
     new_map = {c: cmap_jp[can] for c, can in _cjk_compat_pairs(cmap_jp).items()}
     for table in font_jp["cmap"].tables:
         if table.isUnicode():
             table.cmap.update(new_map)
-    return len(new_map)
 
 
-def add_cjk_compatibility_mappings_to_ufos(ufos: list[ufoLib2.Font]) -> int:
+def add_cjk_compatibility_mappings_to_ufos(ufos: list[ufoLib2.Font]) -> None:
     """Map missing CJK Compatibility Ideographs (U+F900..U+FAFF) across UFO masters."""
     code_to_gname = {u: g.name for g in ufos[0] for u in (g.unicodes or [])}
     pairs = _cjk_compat_pairs(code_to_gname)
@@ -458,8 +455,7 @@ def add_cjk_compatibility_mappings_to_ufos(ufos: list[ufoLib2.Font]) -> int:
         cg = code_to_gname[can]
         for ufo in ufos:
             if cg in ufo:
-                ufo[cg].unicodes = list(ufo[cg].unicodes or []) + [code]
-    return len(pairs)
+                ufo[cg].unicodes = [*(ufo[cg].unicodes or []), code]
 
 
 def _fix_u3000(font: TTFont, full_width: int = 1000) -> None:
@@ -636,7 +632,13 @@ def install_enhanced_chws() -> None:
     global _CHWS_PATCHED
     if _CHWS_PATCHED:
         return
-    from east_asian_spacing.spacing import ChainContextPosBuilder, ChainContextualRule, Font, GlyphSets, PairPosBuilder
+    from east_asian_spacing.spacing import (
+        ChainContextPosBuilder,
+        ChainContextualRule,
+        Font,
+        GlyphSets,
+        PairPosBuilder,
+    )
 
     def custom_build_chws_lookup(self, font: Font, lookups, pos: GlyphSets.PosValues):
         self.assert_font(font)
@@ -647,7 +649,7 @@ def install_enhanced_chws() -> None:
         if font.is_vertical:
             for g in ("uniFF1B.vert", "semicolon.full.vert", "uniFF1B"):
                 if g in glyph_order and g not in pos.middle:
-                    pos.middle = pos.middle + (g,)
+                    pos.middle = (*pos.middle, g)
 
         axis, sign = ("Y", 1) if font.is_vertical else ("X", -1)
         half_left_val, quad_left_val = buildValue({f"{axis}Advance": -half_em}), buildValue({f"{axis}Advance": -quad_em})
@@ -711,9 +713,9 @@ def _sync_otl_glyph_order(font: TTFont) -> None:
     for tag in ("GSUB", "GPOS"):
         if tag not in font:
             continue
-        for l in font[tag].table.LookupList.Lookup:
+        for lookup in font[tag].table.LookupList.Lookup:
             new_sts = []
-            for st in l.SubTable:
+            for st in lookup.SubTable:
                 s = st.ExtSubTable if hasattr(st, "ExtSubTable") else st
                 if getattr(s, "Format", None) == 1 and hasattr(s, "PairSet"):
                     paired = []
@@ -740,7 +742,7 @@ def _sync_otl_glyph_order(font: TTFont) -> None:
                     for cov in getattr(s, attr, ()):
                         cov.glyphs.sort(key=gid_map.__getitem__)
                 new_sts.append(st)
-            l.SubTable, l.SubTableCount = new_sts, len(new_sts)
+            lookup.SubTable, lookup.SubTableCount = new_sts, len(new_sts)
 
 
 def _cluster_modal_glyph_order(font: TTFont, full_width: int) -> None:
@@ -769,26 +771,36 @@ def _remove_empty_pua_from_cmap(font: TTFont) -> None:
 
 
 def subset_and_export(
-    font_path: Path, out_desktop: Path, out_woff2: Path,
-    layout_features: list[str] | None = None, output_dir: Path = OUTPUT_DIR,
-) -> None:
-    """Remove unreferenced glyphs, drop obsolete tables, set post 3.0, and export desktop + WOFF2."""
+    font_path: Path,
+    out_desktop: Path,
+    out_woff2: Path,
+    unicodes: set[int] | None = None,
+    mac_ts: int | None = None,
+) -> int:
+    """Subset glyphs, drop obsolete tables, set post 3.0, and export desktop + WOFF2."""
+    is_mono = "Mono" in out_desktop.name
     font = TTFont(font_path)
-    _remove_empty_pua_from_cmap(font)
+    if unicodes is None:
+        _remove_empty_pua_from_cmap(font)
+        target_unicodes = set(font.getBestCmap().keys())
+        langs = "Jpan, Latn, Cyrl, Grek"
+    else:
+        target_unicodes = unicodes
+        langs = "Jpan, Latn"
 
     opts = SubsetOptions()
-    opts.layout_features = layout_features if layout_features is not None else ["*"]
+    opts.layout_features = MONO_SAFE_FEATURES if is_mono else ["*"]
     opts.name_IDs, opts.name_languages = ["*"], ["*"]
     opts.notdef_outline = True
     opts.glyph_names = opts.hinting = False
-    opts.drop_tables += ["DSIG"]
+    opts.drop_tables += ["DSIG", "meta"]
 
     subsetter = Subsetter(options=opts)
-    subsetter.populate(unicodes=font.getBestCmap().keys())
+    subsetter.populate(unicodes=target_unicodes)
     subsetter.subset(font)
 
     meta = newTable("meta")
-    meta.data = {"dlng": "Jpan, Latn, Cyrl, Grek", "slng": "Jpan, Latn, Cyrl, Grek"}
+    meta.data = {"dlng": langs, "slng": langs}
     font["meta"] = meta
 
     if out_desktop.suffix == ".ttf":
@@ -799,36 +811,31 @@ def subset_and_export(
             glyf = font["glyf"]
             if outlined := [glyf[g] for g in font.getGlyphOrder() if getattr(glyf[g], "numberOfContours", 0) != 0]:
                 font["head"].yMax, font["head"].yMin = max(g.yMax for g in outlined), min(g.yMin for g in outlined)
-        if "HolonMono" in out_desktop.name:
-            font["OS/2"].usWinAscent, font["OS/2"].usWinDescent = max(950, font["head"].yMax), max(225, -font["head"].yMin)
+        if is_mono:
+            font["OS/2"].usWinAscent = max(950, font["head"].yMax)
+            font["OS/2"].usWinDescent = max(225, -font["head"].yMin)
 
     if "GPOS" in font:
         compact_otl(font, level=7)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    set_font_deterministic_timestamp(font)
+    out_desktop.parent.mkdir(parents=True, exist_ok=True)
+    set_font_deterministic_timestamp(font, mac_ts=mac_ts)
     font.flavor = "woff2"
     font.save(out_woff2)
     font.flavor = None
     if "CFF2" in font or "CFF " in font:
         cffsubr.subroutinize(font)
-    set_font_deterministic_timestamp(font)
     font.save(out_desktop)
-
-    if font_path != out_desktop and font_path.exists():
-        font_path.unlink()
-
-    print(f"  Desktop: {out_desktop} ({out_desktop.stat().st_size:,} bytes, {font['maxp'].numGlyphs:,} glyphs)")
-    print(f"  WOFF2:   {out_woff2} ({out_woff2.stat().st_size:,} bytes)")
+    return font["maxp"].numGlyphs
 
 
 def _export_and_chws(
     font: TTFont, inter_path: Path, out_font: Path, out_woff2: Path,
-    is_mono: bool, output_dir: Path, label: str = "",
+    is_mono: bool, label: str = "",
 ) -> None:
     """Save intermediate TTF/OTF, run CHWS if proportional, and export subsetted binaries."""
     _cluster_modal_glyph_order(font, FULL_WIDTH if is_mono else 1000)
-    set_font_deterministic_timestamp(font)
+    inter_path.parent.mkdir(parents=True, exist_ok=True)
     src_path = inter_path
     font.save(src_path)
     if not is_mono:
@@ -838,12 +845,16 @@ def _export_and_chws(
         asyncio.run(apply_chws(src_path, chws_path))
         src_path.unlink(missing_ok=True)
         src_path = chws_path
-    subset_and_export(src_path, out_font, out_woff2, layout_features=MONO_SAFE_FEATURES if is_mono else ["*"], output_dir=output_dir)
+    num_glyphs = subset_and_export(src_path, out_font, out_woff2)
+    if src_path != out_font and src_path.exists():
+        src_path.unlink()
+    print(f"  Desktop: {out_font} ({out_font.stat().st_size:,} bytes, {num_glyphs:,} glyphs)")
+    print(f"  WOFF2:   {out_woff2} ({out_woff2.stat().st_size:,} bytes)")
 
 
 # --- Static Font Builders (Sans & Mono) ---
 
-def build_static_style(family_name: str, weight: str, italic: bool = False, output_dir: Path = OUTPUT_DIR) -> Path:
+def build_static_style(family_name: str, weight: str, italic: bool = False, output_dir: Path = OUTPUT_DIR) -> None:
     """Build a static style for Holon Sans or Holon Mono."""
     is_mono = (family_name == MONO_FAMILY)
     style_name, _, _ = style_names(weight, italic)
@@ -927,8 +938,7 @@ def build_static_style(family_name: str, weight: str, italic: bool = False, outp
     inter_path = TMP_DIR / f"{family_compact}-{ps_suffix}.inter.ttf"
     final_ttf, final_woff2 = output_dir / f"{family_compact}-{ps_suffix}.ttf", output_dir / f"{family_compact}-{ps_suffix}.woff2"
 
-    _export_and_chws(font_jp, inter_path, final_ttf, final_woff2, is_mono, output_dir)
-    return final_ttf
+    _export_and_chws(font_jp, inter_path, final_ttf, final_woff2, is_mono)
 
 
 # --- Variable Font Builders & Helpers ---
@@ -1058,7 +1068,7 @@ def _merge_variable_latin(dst_ufos: list[ufoLib2.Font], latin_masters_dir: Path,
             else:
                 ng.width = fixed_w if fixed_w is not None else (round(src_g.width * SCALE_SANS) if not g_r.name.endswith(".rotat") else src_g.width)
                 src_g.drawPoints(TransformPointPen(ng.getPointPen(), (SCALE_SANS, 0.0, 0.0, SCALE_SANS, 0.0, 0.0)))
-                if not is_mono and g_r.name == "zero.alt01" and "zero.zero" in dst_u:
+                if g_r.name == "zero.alt01" and "zero.zero" in dst_u:
                     zg = dst_u["zero.zero"]
                     zg.clear()
                     zg.height, zg.verticalOrigin = full_v_adv, 880
@@ -1073,7 +1083,7 @@ def _merge_variable_latin(dst_ufos: list[ufoLib2.Font], latin_masters_dir: Path,
             if "macroncomb" in dst_u:
                 dst_u["macroncomb"].width = 0
                 if 0x02C9 not in (dst_u["macroncomb"].unicodes or []):
-                    dst_u["macroncomb"].unicodes = list(dst_u["macroncomb"].unicodes or []) + [0x02C9]
+                    dst_u["macroncomb"].unicodes = [*(dst_u["macroncomb"].unicodes or []), 0x02C9]
             for g in dst_u:
                 if g.name != "macroncomb" and 0x02C9 in (g.unicodes or []):
                     g.unicodes = [x for x in g.unicodes if x != 0x02C9]
@@ -1156,10 +1166,9 @@ def _restore_sans_gpos_and_base(var_font: TTFont) -> None:
 
 def _compile_and_export_vf(
     var_ds: DesignSpaceDocument, italic: bool, family_name: str = SANS_FAMILY, output_dir: Path = OUTPUT_DIR,
-) -> Path:
+) -> None:
     style_label, family_compact = ("Italic" if italic else "Roman"), family_name.replace(" ", "")
     is_mono = (family_name == MONO_FAMILY)
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
     inter_otf = TMP_DIR / f"{family_compact}-{style_label}-Variable.inter.otf"
 
     print(f"Compiling CFF2 variable font ({family_name} {style_label})...")
@@ -1177,8 +1186,7 @@ def _compile_and_export_vf(
         _restore_sans_gpos_and_base(var_font)
 
     out_otf, out_woff2 = output_dir / f"{family_compact}-{ps_suffix}.otf", output_dir / f"{family_compact}-{ps_suffix}.woff2"
-    _export_and_chws(var_font, inter_otf, out_otf, out_woff2, is_mono, output_dir, label=style_label)
-    return out_otf
+    _export_and_chws(var_font, inter_otf, out_otf, out_woff2, is_mono, label=style_label)
 
 
 def _get_base_jp_ufos(glyphs_path: Path) -> list[ufoLib2.Font]:
@@ -1204,7 +1212,7 @@ def _get_base_jp_ufos(glyphs_path: Path) -> list[ufoLib2.Font]:
     return _BASE_JP_UFOS
 
 
-def build_family_variable_fonts(family_name: str, style: str = "both", output_dir: Path = OUTPUT_DIR) -> list[Path]:
+def build_family_variable_fonts(family_name: str, style: str = "both", output_dir: Path = OUTPUT_DIR) -> None:
     """Build 2-file Variable Fonts for Holon Sans or Holon Mono."""
     is_mono = (family_name == MONO_FAMILY)
     full_width = FULL_WIDTH if is_mono else 1000
@@ -1212,7 +1220,6 @@ def build_family_variable_fonts(family_name: str, style: str = "both", output_di
     print(f"\n=== Building {family_name} Variable Fonts (2-File Architecture) ===")
     base_ufos = _get_base_jp_ufos(glyphs_path)
 
-    built = []
     for s in ("roman", "italic") if style == "both" else (style,):
         italic = (s == "italic")
         ufos = [copy.deepcopy(u) for u in base_ufos]
@@ -1237,11 +1244,7 @@ def build_family_variable_fonts(family_name: str, style: str = "both", output_di
         u_gp = _make_grade_master(ufos[1], ufos[2], 0.15, f"Regular{suffix} Grade+", family_name=family_name)
         u_gn = _make_grade_master(ufos[1], ufos[0], 0.15, f"Regular{suffix} Grade-", family_name=family_name)
         var_ds = _make_variable_designspace([*ufos, u_gp, u_gn], italic=italic, family_name=family_name)
-        built.append(_compile_and_export_vf(var_ds, italic, family_name=family_name, output_dir=output_dir))
-
-    return built
-
-
+        _compile_and_export_vf(var_ds, italic, family_name=family_name, output_dir=output_dir)
 
 
 # --- Font Subsetter ---
@@ -1253,57 +1256,10 @@ def subset_single_font(
     mac_timestamp: int | None = None,
 ) -> tuple[str, int, int, int]:
     """Subset a single font file into desktop (TTF/OTF) and WOFF2 formats."""
-    is_mono = "Mono" in src_path.name
-    out_name = src_path.name
-    out_desktop = out_dir / out_name
+    out_desktop = out_dir / src_path.name
     out_woff2 = out_dir / (src_path.stem + ".woff2")
-    mac_ts = mac_timestamp if mac_timestamp is not None else CURRENT_BUILD_MAC_TS
-
-    font = TTFont(src_path)
-
-    opts = SubsetOptions()
-    opts.layout_features = MONO_SAFE_FEATURES if is_mono else ["*"]
-    opts.name_IDs = ["*"]
-    opts.name_languages = ["*"]
-    opts.notdef_outline = True
-    opts.glyph_names = False
-    opts.hinting = False
-    opts.drop_tables += ["DSIG", "meta"]
-
-    subsetter = Subsetter(options=opts)
-    subsetter.populate(unicodes=unicodes)
-    subsetter.subset(font)
-
-    meta = newTable("meta")
-    meta.data = {"dlng": "Jpan, Latn", "slng": "Jpan, Latn"}
-    font["meta"] = meta
-
-    if out_desktop.suffix == ".ttf":
-        gasp = newTable("gasp")
-        gasp.gaspRange = {0xFFFF: 15}
-        font["gasp"] = gasp
-        if "glyf" in font:
-            glyf = font["glyf"]
-            if outlined := [glyf[g] for g in font.getGlyphOrder() if getattr(glyf[g], "numberOfContours", 0) != 0]:
-                font["head"].yMax, font["head"].yMin = max(g.yMax for g in outlined), min(g.yMin for g in outlined)
-        if is_mono:
-            font["OS/2"].usWinAscent = max(950, font["head"].yMax)
-            font["OS/2"].usWinDescent = max(225, -font["head"].yMin)
-
-    if "GPOS" in font:
-        compact_otl(font, level=7)
-
-    set_font_deterministic_timestamp(font, mac_ts=mac_ts)
-    font.flavor = "woff2"
-    font.save(out_woff2)
-    font.flavor = None
-
-    if "CFF2" in font or "CFF " in font:
-        cffsubr.subroutinize(font)
-
-    set_font_deterministic_timestamp(font, mac_ts=mac_ts)
-    font.save(out_desktop)
-    return out_name, src_path.stat().st_size, out_desktop.stat().st_size, out_woff2.stat().st_size
+    subset_and_export(src_path, out_desktop, out_woff2, unicodes=unicodes, mac_ts=mac_timestamp)
+    return src_path.name, src_path.stat().st_size, out_desktop.stat().st_size, out_woff2.stat().st_size
 
 
 def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_DIR) -> None:
@@ -1313,7 +1269,6 @@ def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_D
         return
     output_dir.mkdir(parents=True, exist_ok=True)
     unicodes = {ord(c) for c in SUBSET_CHARACTERS}
-    unicodes.add(0x0020)
 
     candidates = sorted([p for p in input_dir.iterdir() if p.is_file() and p.suffix in (".ttf", ".otf")])
     if not candidates:
@@ -1322,9 +1277,10 @@ def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_D
 
     print(f"Subsetting {len(candidates)} font files from {input_dir} to {output_dir}...")
     t0 = time.time()
+    mac_ts = get_build_mac_timestamp()
     results = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-        futures = {executor.submit(subset_single_font, src, output_dir, unicodes, CURRENT_BUILD_MAC_TS): src for src in candidates}
+        futures = {executor.submit(subset_single_font, src, output_dir, unicodes, mac_ts): src for src in candidates}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             results.append(res)
@@ -1338,6 +1294,7 @@ def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_D
     tot_pct = (1.0 - tot_desk / tot_orig) * 100 if tot_orig else 0
     print(f"Subsetting complete in {elapsed:.1f}s ({tot_orig/1024/1024:.1f} MB -> {tot_desk/1024/1024:.1f} MB, {tot_pct:.1f}% reduction).")
 
+
 # --- CLI Entry Point ---
 
 def main() -> None:
@@ -1350,7 +1307,7 @@ def main() -> None:
                         help="Remove generated font directories (fonts/full, fonts/subset) and tmp/")
     parser.add_argument("--family", choices=["sans", "mono", "sans-variable", "mono-variable", "variable", "all"], default="sans",
                         help="Font family to build (default: sans; use 'variable' for both VFs, 'all' for full suite)")
-    parser.add_argument("--weight", choices=WEIGHTS + ["all"], default="Regular", help="Weight to build for static fonts (default: Regular, or 'all')")
+    parser.add_argument("--weight", choices=[*WEIGHTS, "all"], default="Regular", help="Weight to build for static fonts (default: Regular, or 'all')")
     parser.add_argument("--italic", action="store_true", help="Build Italic style for static fonts")
     parser.add_argument("--all-styles", action="store_true", help="Build all weights and styles (Upright and Italic)")
     parser.add_argument("--var-style", choices=["roman", "italic", "both"], default="both",
@@ -1364,19 +1321,19 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.clean:
-        import shutil
         for d in (args.output_dir, args.subset_dir, TMP_DIR):
             if d.exists():
                 print(f"Cleaning {d}...")
                 shutil.rmtree(d)
+        fonts_parent = Path("fonts")
+        if fonts_parent.is_dir() and not any(fonts_parent.iterdir()):
+            fonts_parent.rmdir()
         print("Clean completed successfully.")
         return
 
-    if args.timestamp is not None:
-        set_global_build_timestamp(args.timestamp)
-
-    utc_dt = datetime.datetime.fromtimestamp(CURRENT_BUILD_UNIX_TS, datetime.timezone.utc)
-    print(f"=== Holon Font Builder (Deterministic Timestamp: {utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}, Unix: {CURRENT_BUILD_UNIX_TS}) ===")
+    unix_ts = configure_build_timestamp(args.timestamp)
+    utc_dt = datetime.datetime.fromtimestamp(unix_ts, datetime.UTC)
+    print(f"=== Holon Font Builder (Deterministic Timestamp: {utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}, Unix: {unix_ts}) ===")
 
     if args.all:
         args.family = "all"
@@ -1405,7 +1362,6 @@ def main() -> None:
         for fam_name in var_fams:
             build_family_variable_fonts(fam_name, style=args.var_style, output_dir=args.output_dir)
 
-    ensure_root_ofl_license()
     if args.subset:
         build_subset_fonts(input_dir=args.output_dir, output_dir=args.subset_dir)
 
