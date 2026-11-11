@@ -55,14 +55,17 @@ body {
 [uv](https://docs.astral.sh/uv/) を使用してビルドおよびテストを実行します。
 
 ```bash
-# 全フォントのビルド (fonts/full)
-uv run build.py --family all --all-styles
+# 全フォント＋サブセット版の一括ビルド (全72フォント / 144ファイル)
+uv run build.py --all
 
-# 常用漢字サブセット版の生成 (fonts/subset)
+# フル版のみ全ビルド (fonts/full)
+uv run build.py --full-only
+
+# 常用漢字サブセット版のみの生成 (fonts/subset)
 uv run build.py --subset-only
 
-# 全フォント＋サブセット版の一括ビルド
-uv run build.py --family all --all-styles --subset
+# 生成済みフォント・一時ファイルのクリーンアップ
+uv run build.py --clean
 
 # 自動テストの実行
 uv run test.py

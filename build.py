@@ -27,11 +27,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import concurrent.futures
-import os
 import copy
+import datetime
 import hashlib
 import math
+import os
 import re
+import subprocess
+import sys
 import time
 import unicodedata
 import urllib.request
@@ -52,6 +55,7 @@ from fontTools.subset import Options as SubsetOptions, Subsetter
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables
 from fontTools.ttLib.tables._g_l_y_f import GlyphCoordinates
+from fontTools.ttLib.tables._h_e_a_d import mac_epoch_diff
 from glyphsLib import GSFont, to_designspace
 from glyphsLib.builder.constants import ORIGINAL_WIDTH_KEY
 
@@ -96,6 +100,75 @@ MONO_SAFE_FEATURES = [
 ]
 
 OUTPUT_DIR, SUBSET_DIR, TMP_DIR = Path("fonts/full"), Path("fonts/subset"), Path("tmp")
+
+# --- Deterministic Build Timestamp (Reproducible Builds) ---
+
+DEFAULT_BUILD_EPOCH = 1767225600  # 2026-01-01 00:00:00 UTC
+
+
+def get_git_commit_timestamp() -> int | None:
+    """Return unix timestamp of latest git commit, or None if git is unavailable."""
+    try:
+        res = subprocess.run(
+            ["git", "log", "-1", "--format=%ct"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if ct := res.stdout.strip():
+            return int(ct)
+    except Exception:
+        pass
+    return None
+
+
+def resolve_build_timestamp(explicit: int | None = None) -> int:
+    """Resolve deterministic build timestamp in Unix epoch seconds.
+
+    Priority:
+    1. Explicit CLI argument (--timestamp)
+    2. SOURCE_DATE_EPOCH environment variable (Reproducible Builds standard)
+    3. Latest Git commit timestamp
+    4. Project default epoch (2026-01-01 00:00:00 UTC)
+    """
+    if explicit is not None:
+        return int(explicit)
+    if "SOURCE_DATE_EPOCH" in os.environ:
+        try:
+            return int(os.environ["SOURCE_DATE_EPOCH"])
+        except ValueError:
+            pass
+    if git_ts := get_git_commit_timestamp():
+        return git_ts
+    return DEFAULT_BUILD_EPOCH
+
+
+def unix_to_mac_epoch(unix_ts: int) -> int:
+    """Convert Unix epoch seconds to OpenType Mac epoch seconds (seconds since 1904-01-01)."""
+    return unix_ts - mac_epoch_diff
+
+
+CURRENT_BUILD_UNIX_TS = resolve_build_timestamp()
+CURRENT_BUILD_MAC_TS = unix_to_mac_epoch(CURRENT_BUILD_UNIX_TS)
+os.environ["SOURCE_DATE_EPOCH"] = str(CURRENT_BUILD_UNIX_TS)
+
+
+def set_global_build_timestamp(unix_ts: int) -> None:
+    """Set global deterministic build timestamp from CLI or caller."""
+    global CURRENT_BUILD_UNIX_TS, CURRENT_BUILD_MAC_TS
+    CURRENT_BUILD_UNIX_TS = unix_ts
+    CURRENT_BUILD_MAC_TS = unix_to_mac_epoch(unix_ts)
+    os.environ["SOURCE_DATE_EPOCH"] = str(unix_ts)
+
+
+def set_font_deterministic_timestamp(font: TTFont, mac_ts: int | None = None) -> None:
+    """Ensure font has deterministic timestamp and disables automatic recalculation on save."""
+    ts = mac_ts if mac_ts is not None else CURRENT_BUILD_MAC_TS
+    font.recalcTimestamp = False
+    if "head" in font:
+        font["head"].created = ts
+        font["head"].modified = ts
+
 SUBSET_CHARACTERS = ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\xa0¡¢£¤¥¦§¨©ª«¬\xad®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ―‘’“”…‰′″※€℃←↑→↓⇄⇆−√∞≒≠≦≧■□▲△▶▷▼▽◀◁◆◇○◎●★☆✓\u3000、。〈〉《》「」『』【】〒〔〕〜ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろゎわゐゑをんゔゕゖ゙゚ゝゞァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロヮワヰヱヲンヴヵヶヷヸヹ・ーヽヾ一丁七万丈三上下不与且世丘丙両並中串丸丹主丼久乏乗乙九乞乱乳乾亀了予争事二互五井亜亡交享京亭人仁今介仏仕他付仙代令以仮仰仲件任企伎伏伐休会伝伯伴伸伺似但位低住佐体何余作佳併使例侍供依価侮侯侵侶便係促俊俗保信修俳俵俸俺倉個倍倒候借倣値倫倹偉偏停健側偵偶偽傍傑傘備催傲債傷傾僅働像僕僚僧儀億儒償優元兄充兆先光克免児党入全八公六共兵具典兼内円冊再冒冗写冠冥冬冶冷凄准凍凝凡処凶凸凹出刀刃分切刈刊刑列初判別利到制刷券刹刺刻則削前剖剛剝剣剤副剰割創劇力功加劣助努励労効劾勃勅勇勉動勘務勝募勢勤勧勲勺勾匁匂包化北匠匹区医匿十千升午半卑卒卓協南単博占印危即却卵卸厄厘厚原厳去参又及友双反収叔取受叙口古句叫召可台史右号司各合吉同名后吏吐向君吟否含吸吹呂呈呉告周呪味呼命和咲咽哀品員哲哺唄唆唇唐唯唱唾商問啓善喉喚喜喝喩喪喫営嗅嗣嘆嘱嘲器噴嚇囚四回因団困囲図固国圏園土圧在地坂均坊坑坪垂型垣埋城域執培基埼堀堂堅堆堕堤堪報場塀塁塊塑塔塗塚塞塡塩塾境墓増墜墨墳墾壁壇壊壌士壮声壱売変夏夕外多夜夢大天太夫央失奇奈奉奏契奔奥奨奪奮女奴好如妃妄妊妖妙妥妨妬妹妻姉始姓委姫姻姿威娘娠娯婆婚婦婿媒媛嫁嫉嫌嫡嬢子孔字存孝季孤学孫宅宇守完宗官宙定宛宜宝実客宣室宮宰害宴宵家容宿寂寄密富寒寛寝察寡寧審寮寸寺対寿封専射将尉尊尋導小少尚就尺尻尼尽尾尿局居屈届屋展属層履屯山岐岡岩岬岳岸峠峡峰島崇崎崖崩嵐川州巡巣工左巧巨差己巻巾市布帆希帝帥師席帯帰帳常帽幅幕幣干平年幸幹幻幼幽幾庁広床序底店府度座庫庭庶康庸廃廉廊延廷建弁弄弊式弐弓弔引弟弥弦弧弱張強弾当彙形彩彫彰影役彼往征径待律後徐徒従得御復循微徳徴徹心必忌忍志忘忙応忠快念怒怖思怠急性怨怪恋恐恒恣恥恨恩恭息恵悔悟悠患悦悩悪悲悼情惑惜惧惨惰想愁愉意愚感慄慈態慌慎慕慢慣慨慮慰慶憂憎憤憧憩憬憲憶憾懇懐懲懸成我戒戚戦戯戴戸戻房所扇扉手才打払扱扶批承技抄把抑投抗折抜択披抱抵抹押抽担拉拍拐拒拓拘拙招拝拠拡括拭拳拶拷拾持指挑挙挟挫振挿捉捕捗捜捨据捻掃授掌排掘掛採探接控推措掲描提揚換握揮援揺損搬搭携搾摂摘摩摯撃撤撮撲擁操擦擬支改攻放政故敏救敗教敢散敬数整敵敷文斉斎斑斗料斜斤斥斬断新方施旅旋族旗既日旦旧旨早旬旺昆昇明易昔星映春昧昨昭是昼時晩普景晴晶暁暇暑暖暦暫暮暴曇曖曜曲更書曹曽替最月有服朕朗望朝期木未末本札朱朴机朽杉材村束条来杯東松板析枕林枚果枝枠枢枯架柄某染柔柱柳柵査柿栃栄栓校株核根格栽桁桃案桑桜桟梅梗梨械棄棋棒棚棟森棺椅植椎検業極楷楼楽概構様槽標模権横樹橋機欄欠次欧欲欺款歌歓止正武歩歯歳歴死殉殊残殖殴段殺殻殿毀母毎毒比毛氏民気水氷永氾汁求汎汗汚江池汰決汽沃沈沖沙没沢河沸油治沼沿況泉泊泌法泡波泣泥注泰泳洋洗洞津洪活派流浄浅浜浦浪浮浴海浸消涙涯液涼淑淡淫深混添清渇済渉渋渓減渡渦温測港湖湧湯湾湿満源準溝溶溺滅滋滑滝滞滴漁漂漆漏演漠漢漫漬漸潔潜潟潤潮潰澄激濁濃濫濯瀬火灯灰災炉炊炎炭点為烈無焦然焼煎煙照煩煮熊熟熱燃燥爆爪爵父爽片版牙牛牧物牲特犠犬犯状狂狙狩独狭猛猟猫献猶猿獄獣獲玄率玉王玩珍珠班現球理琴瑠璃璧環璽瓦瓶甘甚生産用田由甲申男町画界畏畑畔留畜畝略番異畳畿疎疑疫疲疾病症痕痘痛痢痩痴瘍療癒癖発登白百的皆皇皮皿盆益盗盛盟監盤目盲直相盾省眉看県真眠眺眼着睡督睦瞬瞭瞳矛矢知短矯石砂研砕砲破硝硫硬碁碑確磁磨礁礎示礼社祈祉祖祝神祥票祭禁禅禍福秀私秋科秒秘租秩称移程税稚種稲稼稽稿穀穂積穏穫穴究空突窃窒窓窟窮窯立竜章童端競竹笑笛符第筆等筋筒答策箇箋算管箱箸節範築篤簡簿籍籠米粉粋粒粗粘粛粧精糖糧糸系糾紀約紅紋納純紙級紛素紡索紫累細紳紹紺終組経結絞絡給統絵絶絹継続維綱網綻綿緊総緑緒線締編緩緯練緻縁縄縛縦縫縮績繁繊織繕繭繰缶罪置罰署罵罷羅羊美羞群羨義羽翁翌習翻翼老考者耐耕耗耳聖聞聴職肉肌肖肘肝股肢肥肩肪肯育肺胃胆背胎胞胴胸能脂脅脇脈脊脚脱脳脹腎腐腕腫腰腸腹腺膚膜膝膨膳臆臓臣臨自臭至致臼興舌舎舗舞舟航般舶舷船艇艦良色艶芋芝芯花芳芸芽苗苛若苦英茂茎茨茶草荒荘荷菊菌菓菜華萎落葉著葛葬蒸蓄蓋蔑蔵蔽薄薦薪薫薬藍藤藩藻虎虐虚虜虞虫虹蚊蚕蛇蛍蛮蜂蜜融血衆行術街衛衝衡表衰衷袋袖被裁裂装裏裕補裸製裾複褐褒襟襲西要覆覇見規視覚覧親観角解触言訂訃計討訓託記訟訪設許訳訴診証詐詔評詞詠詣試詩詮詰話該詳誇誉誌認誓誕誘語誠誤説読誰課調談請論諦諧諭諮諸諾謀謁謄謎謙講謝謡謹識譜警議譲護谷豆豊豚象豪貌貝貞負財貢貧貨販貪貫責貯貴買貸費貼貿賀賂賃賄資賊賓賛賜賞賠賢賦質賭購贈赤赦走赴起超越趣足距跡路跳践踊踏踪蹴躍身車軌軍軒軟転軸軽較載輝輩輪輸轄辛辞辣辱農辺込迅迎近返迫迭述迷追退送逃逆透逐逓途通逝速造連逮週進逸遂遅遇遊運遍過道達違遜遠遡遣適遭遮遵遷選遺避還那邦邪邸郊郎郡部郭郵郷都酌配酎酒酔酢酪酬酵酷酸醒醜醸采釈里重野量金釜針釣鈍鈴鉄鉛鉢鉱銀銃銅銑銘銭鋭鋳鋼錘錠錦錬錮錯録鍋鍛鍵鎌鎖鎮鏡鐘鑑長門閉開閑間関閣閥閲闇闘阜阪防阻附降限陛院陣除陥陪陰陳陵陶陸険陽隅隆隊階随隔隙際障隠隣隷隻雄雅集雇雌雑離難雨雪雰雲零雷電需震霊霜霧露青静非面革靴韓音韻響頂頃項順須預頑頒頓領頭頰頻頼題額顎顔顕願類顧風飛食飢飯飲飼飽飾餅養餌餓館首香馬駄駅駆駐駒騎騒験騰驚骨骸髄高髪鬱鬼魂魅魔魚鮮鯨鳥鳴鶏鶴鹿麓麗麦麺麻黄黒黙鼓鼻齢！％（）＋：；＜＝＞？［］～￥𠮟'
 
 # --- Pinned Upstream Sources & SHA-256 Checksums ---
@@ -239,19 +312,14 @@ def ensure_variable_sources(for_family: str = "sans") -> tuple[Path, Path]:
     return ensure_zip_source("sans-jp"), ensure_zip_source("mono-variable" if for_family == "mono" else "sans-variable").parent
 
 
-def write_ofl_license(output_dir: Path) -> Path:
-    """Ensure upstream LICENSE.txt is verified and write output_dir/OFL.txt and root OFL.txt verbatim."""
-    lic_path = ensure_ttf_source(UPSTREAM_JP_LICENSE_REL)
-    lic_bytes = b"Copyright 2026 Daiji Suzuki.\r\n" + lic_path.read_bytes()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    ofl_out = output_dir / "OFL.txt"
-    ofl_out.write_bytes(lic_bytes)
-    # Also sync to root OFL.txt
-    try:
-        Path("OFL.txt").write_bytes(lic_bytes)
-    except OSError:
-        pass
-    return ofl_out
+def ensure_root_ofl_license() -> Path:
+    """Ensure upstream LICENSE.txt is verified and sync root OFL.txt verbatim if missing."""
+    root_ofl = Path("OFL.txt")
+    if not root_ofl.exists():
+        lic_path = ensure_ttf_source(UPSTREAM_JP_LICENSE_REL)
+        lic_bytes = b"Copyright 2026 Daiji Suzuki.\r\n" + lic_path.read_bytes()
+        root_ofl.write_bytes(lic_bytes)
+    return root_ofl
 
 
 # --- Shared Glyph, Transform & OpenType Helpers ---
@@ -554,6 +622,7 @@ def apply_opentype_metadata(
 
     head = font["head"]
     head.fontRevision, head.macStyle = 1.0, (0x02 if italic else 0) | (0x01 if weight == "Bold" else 0)
+    set_font_deterministic_timestamp(font)
     font["post"].italicAngle = italic_angle if italic else 0.0
     font["hhea"].caretSlopeRise, font["hhea"].caretSlopeRun = (1000, round(1000.0 * math.tan(math.radians(-italic_angle)))) if italic else (1, 0)
 
@@ -737,11 +806,13 @@ def subset_and_export(
         compact_otl(font, level=7)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    set_font_deterministic_timestamp(font)
     font.flavor = "woff2"
     font.save(out_woff2)
     font.flavor = None
     if "CFF2" in font or "CFF " in font:
         cffsubr.subroutinize(font)
+    set_font_deterministic_timestamp(font)
     font.save(out_desktop)
 
     if font_path != out_desktop and font_path.exists():
@@ -757,6 +828,7 @@ def _export_and_chws(
 ) -> None:
     """Save intermediate TTF/OTF, run CHWS if proportional, and export subsetted binaries."""
     _cluster_modal_glyph_order(font, FULL_WIDTH if is_mono else 1000)
+    set_font_deterministic_timestamp(font)
     src_path = inter_path
     font.save(src_path)
     if not is_mono:
@@ -1178,12 +1250,14 @@ def subset_single_font(
     src_path: Path,
     out_dir: Path,
     unicodes: set[int],
+    mac_timestamp: int | None = None,
 ) -> tuple[str, int, int, int]:
     """Subset a single font file into desktop (TTF/OTF) and WOFF2 formats."""
     is_mono = "Mono" in src_path.name
     out_name = src_path.name
     out_desktop = out_dir / out_name
     out_woff2 = out_dir / (src_path.stem + ".woff2")
+    mac_ts = mac_timestamp if mac_timestamp is not None else CURRENT_BUILD_MAC_TS
 
     font = TTFont(src_path)
 
@@ -1219,6 +1293,7 @@ def subset_single_font(
     if "GPOS" in font:
         compact_otl(font, level=7)
 
+    set_font_deterministic_timestamp(font, mac_ts=mac_ts)
     font.flavor = "woff2"
     font.save(out_woff2)
     font.flavor = None
@@ -1226,6 +1301,7 @@ def subset_single_font(
     if "CFF2" in font or "CFF " in font:
         cffsubr.subroutinize(font)
 
+    set_font_deterministic_timestamp(font, mac_ts=mac_ts)
     font.save(out_desktop)
     return out_name, src_path.stat().st_size, out_desktop.stat().st_size, out_woff2.stat().st_size
 
@@ -1248,7 +1324,7 @@ def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_D
     t0 = time.time()
     results = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count() or 4) as executor:
-        futures = {executor.submit(subset_single_font, src, output_dir, unicodes): src for src in candidates}
+        futures = {executor.submit(subset_single_font, src, output_dir, unicodes, CURRENT_BUILD_MAC_TS): src for src in candidates}
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             results.append(res)
@@ -1256,7 +1332,6 @@ def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_D
             pct = (1.0 - desk_sz / orig_sz) * 100
             print(f"  [OK] {name:32s}: {orig_sz/1024/1024:5.2f} MB -> {desk_sz/1024/1024:5.2f} MB ({pct:5.1f}% off) | WOFF2: {woff_sz/1024/1024:5.2f} MB")
 
-    write_ofl_license(output_dir)
     elapsed = time.time() - t0
     tot_orig = sum(r[1] for r in results)
     tot_desk = sum(r[2] for r in results)
@@ -1267,6 +1342,12 @@ def build_subset_fonts(input_dir: Path = OUTPUT_DIR, output_dir: Path = SUBSET_D
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build Holon Sans (Static & Variable) and Holon Mono (Static & Variable).")
+    parser.add_argument("--all", action="store_true",
+                        help="Build full suite: Sans & Mono (all static weights + italics), variable fonts, and subset fonts")
+    parser.add_argument("--full-only", action="store_true",
+                        help="Build all full fonts (Sans & Mono static + variable) without generating subsets")
+    parser.add_argument("--clean", action="store_true",
+                        help="Remove generated font directories (fonts/full, fonts/subset) and tmp/")
     parser.add_argument("--family", choices=["sans", "mono", "sans-variable", "mono-variable", "variable", "all"], default="sans",
                         help="Font family to build (default: sans; use 'variable' for both VFs, 'all' for full suite)")
     parser.add_argument("--weight", choices=WEIGHTS + ["all"], default="Regular", help="Weight to build for static fonts (default: Regular, or 'all')")
@@ -1278,7 +1359,33 @@ def main() -> None:
     parser.add_argument("--subset", action="store_true", help="Generate Joyo Kanji subset fonts (saved to fonts/subset)")
     parser.add_argument("--subset-only", action="store_true", help="Only run subset generation from full fonts without rebuilding")
     parser.add_argument("--subset-dir", type=Path, default=SUBSET_DIR, help="Directory where subset fonts are saved (default: fonts/subset)")
+    parser.add_argument("--timestamp", type=int, default=None,
+                        help="Deterministic Unix timestamp for reproducible builds (default: latest git commit or 2026-01-01)")
     args = parser.parse_args()
+
+    if args.clean:
+        import shutil
+        for d in (args.output_dir, args.subset_dir, TMP_DIR):
+            if d.exists():
+                print(f"Cleaning {d}...")
+                shutil.rmtree(d)
+        print("Clean completed successfully.")
+        return
+
+    if args.timestamp is not None:
+        set_global_build_timestamp(args.timestamp)
+
+    utc_dt = datetime.datetime.fromtimestamp(CURRENT_BUILD_UNIX_TS, datetime.timezone.utc)
+    print(f"=== Holon Font Builder (Deterministic Timestamp: {utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}, Unix: {CURRENT_BUILD_UNIX_TS}) ===")
+
+    if args.all:
+        args.family = "all"
+        args.all_styles = True
+        args.subset = True
+    elif args.full_only:
+        args.family = "all"
+        args.all_styles = True
+        args.subset = False
 
     if args.subset_only:
         build_subset_fonts(input_dir=args.output_dir, output_dir=args.subset_dir)
@@ -1298,7 +1405,7 @@ def main() -> None:
         for fam_name in var_fams:
             build_family_variable_fonts(fam_name, style=args.var_style, output_dir=args.output_dir)
 
-    write_ofl_license(args.output_dir)
+    ensure_root_ofl_license()
     if args.subset:
         build_subset_fonts(input_dir=args.output_dir, output_dir=args.subset_dir)
 
