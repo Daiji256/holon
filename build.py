@@ -970,6 +970,12 @@ def _merge_variable_latin(dst_ufos: list[ufoLib2.Font], latin_masters_dir: Path,
             else:
                 ng.width = fixed_w if fixed_w is not None else (round(src_g.width * SCALE_SANS) if not g_r.name.endswith(".rotat") else src_g.width)
                 src_g.drawPoints(TransformPointPen(ng.getPointPen(), (SCALE_SANS, 0.0, 0.0, SCALE_SANS, 0.0, 0.0)))
+                if not is_mono and g_r.name == "zero.alt01" and "zero.zero" in dst_u:
+                    zg = dst_u["zero.zero"]
+                    zg.clear()
+                    zg.height, zg.verticalOrigin = full_v_adv, 880
+                    zg.width = ng.width
+                    src_g.drawPoints(TransformPointPen(zg.getPointPen(), (SCALE_SANS, 0.0, 0.0, SCALE_SANS, 0.0, 0.0)))
             if "public.glyphOrder" in dst_u.lib and g_r.name not in dst_u.lib["public.glyphOrder"]:
                 dst_u.lib["public.glyphOrder"].append(g_r.name)
         added += 1
