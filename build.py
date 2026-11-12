@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "brotli>=1.1.0",
 #     "cffsubr>=0.3.0",
 #     "chws-tool>=1.4.0",
 #     "fonttools>=4.50.0",
@@ -72,6 +71,7 @@ from glyphsLib.builder.constants import ORIGINAL_WIDTH_KEY
 # --- Constants & Metadata ---
 
 SANS_FAMILY, MONO_FAMILY = "Holon Sans", "Holon Mono"
+FONT_VERSION = "1.000"
 VENDOR_ID, VENDOR_URL = "HLON", "https://github.com/Daiji256/holon"
 COPYRIGHT_SANS = (
     "Copyright 2026 Daiji Suzuki. Copyright 2018 IBM Corp. All rights reserved."
@@ -165,7 +165,14 @@ MONO_SAFE_FEATURES = [
     "ss04",
 ]
 
-OUTPUT_DIR, SUBSET_DIR, TMP_DIR = Path("fonts/full"), Path("fonts/subset"), Path("tmp")
+OUTPUT_DIR, SUBSET_DIR, DIST_DIR, TMP_DIR = (
+    Path("fonts/full"),
+    Path("fonts/subset"),
+    Path("dist"),
+    Path("tmp"),
+)
+OFL_COPYRIGHT_PREFIX = b"Copyright 2026 Daiji Suzuki.\r\n"
+UPSTREAM_LICENSE_REL = "plex-sans-jp/LICENSE.txt"
 
 # --- Deterministic Build Timestamp (Reproducible Builds) ---
 
@@ -184,8 +191,8 @@ def get_git_commit_timestamp() -> int | None:
         )
         if ct := res.stdout.strip():
             return int(ct)
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
     return None
 
 
@@ -217,6 +224,14 @@ def configure_build_timestamp(explicit: int | None = None) -> int:
     _BUILD_STATE["mac_ts"] = unix_ts - mac_epoch_diff
     os.environ["SOURCE_DATE_EPOCH"] = str(unix_ts)
     return unix_ts
+
+
+def get_build_unix_timestamp() -> int:
+    """Return active deterministic Unix epoch timestamp, initializing lazily if needed."""
+    if _BUILD_STATE["unix_ts"] is None:
+        configure_build_timestamp()
+    assert _BUILD_STATE["unix_ts"] is not None
+    return _BUILD_STATE["unix_ts"]
 
 
 def get_build_mac_timestamp() -> int:
@@ -286,6 +301,8 @@ TTF_SHA256: dict[str, str] = {
     "plex-sans-jp/fonts/complete/ttf/unhinted/IBMPlexSansJP-Medium.ttf": "ed9257c94b0a540bac56a0faa70ec554b18ea7271fa4f0d33512583dd4bf9c0c",
     "plex-sans-jp/fonts/complete/ttf/unhinted/IBMPlexSansJP-SemiBold.ttf": "3ae17af73062926b013afdec8949923a8adfd4ec8c4f689876c0a359e63e4ceb",
     "plex-sans-jp/fonts/complete/ttf/unhinted/IBMPlexSansJP-Bold.ttf": "070c08915b21a9484e31a73594e4aae69991e4477959a96a6ab4031f4e30ec9f",
+    # Upstream SIL OFL 1.1 license text (verbatim source)
+    UPSTREAM_LICENSE_REL: "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da",
 }
 
 ZIP_SOURCES = {
@@ -396,6 +413,15 @@ def ensure_ttf_source(rel_path: str) -> Path:
             expected_sha,
         )
     return local_path
+
+
+def write_ofl_license(target_dir: Path) -> Path:
+    """Generate standalone OFL.txt in target_dir from verified verbatim upstream license text."""
+    upstream_bytes = ensure_ttf_source(UPSTREAM_LICENSE_REL).read_bytes()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    ofl_path = target_dir / "OFL.txt"
+    ofl_path.write_bytes(OFL_COPYRIGHT_PREFIX + upstream_bytes)
+    return ofl_path
 
 
 def ensure_zip_source(key: str) -> Path:
@@ -879,9 +905,9 @@ def apply_opentype_metadata(
         0: COPYRIGHT_MONO if is_mono else COPYRIGHT_SANS,
         1: ribbi_family,
         2: ribbi_subfamily,
-        3: f"1.000;{VENDOR_ID};{ps_name}",
+        3: f"{FONT_VERSION};{VENDOR_ID};{ps_name}",
         4: f"{family_name} {style_name}",
-        5: "Version 1.000",
+        5: f"Version {FONT_VERSION}",
         6: ps_name,
         7: "",
         8: "Holon Project",
@@ -921,7 +947,7 @@ def apply_opentype_metadata(
 
     head = font["head"]
     head.fontRevision, head.macStyle = (
-        1.0,
+        float(FONT_VERSION),
         (0x02 if italic else 0) | (0x01 if weight == "Bold" else 0),
     )
     set_font_deterministic_timestamp(font)
@@ -1161,11 +1187,10 @@ def _remove_empty_pua_from_cmap(font: TTFont) -> None:
 def subset_and_export(
     font_path: Path,
     out_desktop: Path,
-    out_woff2: Path,
     unicodes: set[int] | None = None,
     mac_ts: int | None = None,
 ) -> int:
-    """Subset glyphs, drop obsolete tables, set post 3.0, and export desktop + WOFF2."""
+    """Subset glyphs, drop obsolete tables, set post 3.0, and export desktop binary."""
     is_mono = "Mono" in out_desktop.name
     font = TTFont(font_path)
     if unicodes is None:
@@ -1215,9 +1240,6 @@ def subset_and_export(
 
     out_desktop.parent.mkdir(parents=True, exist_ok=True)
     set_font_deterministic_timestamp(font, mac_ts=mac_ts)
-    font.flavor = "woff2"
-    font.save(out_woff2)
-    font.flavor = None
     if "CFF2" in font or "CFF " in font:
         cffsubr.subroutinize(font)
     font.save(out_desktop)
@@ -1228,11 +1250,10 @@ def _export_and_chws(
     font: TTFont,
     inter_path: Path,
     out_font: Path,
-    out_woff2: Path,
     is_mono: bool,
     label: str = "",
 ) -> None:
-    """Save intermediate TTF/OTF, run CHWS if proportional, and export subsetted binaries."""
+    """Save intermediate TTF/OTF, run CHWS if proportional, and export subsetted binary."""
     _cluster_modal_glyph_order(font, FULL_WIDTH if is_mono else 1000)
     inter_path.parent.mkdir(parents=True, exist_ok=True)
     src_path = inter_path
@@ -1244,13 +1265,12 @@ def _export_and_chws(
         asyncio.run(apply_chws(src_path, chws_path))
         src_path.unlink(missing_ok=True)
         src_path = chws_path
-    num_glyphs = subset_and_export(src_path, out_font, out_woff2)
+    num_glyphs = subset_and_export(src_path, out_font)
     if src_path != out_font and src_path.exists():
         src_path.unlink()
     print(
         f"  Desktop: {out_font} ({out_font.stat().st_size:,} bytes, {num_glyphs:,} glyphs)"
     )
-    print(f"  WOFF2:   {out_woff2} ({out_woff2.stat().st_size:,} bytes)")
 
 
 # --- Static Font Builders (Sans & Mono) ---
@@ -1393,12 +1413,9 @@ def build_static_style(
     )
     family_compact = family_name.replace(" ", "")
     inter_path = TMP_DIR / f"{family_compact}-{ps_suffix}.inter.ttf"
-    final_ttf, final_woff2 = (
-        output_dir / f"{family_compact}-{ps_suffix}.ttf",
-        output_dir / f"{family_compact}-{ps_suffix}.woff2",
-    )
+    final_ttf = output_dir / f"{family_compact}-{ps_suffix}.ttf"
 
-    _export_and_chws(font_jp, inter_path, final_ttf, final_woff2, is_mono)
+    _export_and_chws(font_jp, inter_path, final_ttf, is_mono)
 
 
 # --- Variable Font Builders & Helpers ---
@@ -1813,13 +1830,8 @@ def _compile_and_export_vf(
     else:
         _restore_sans_gpos_and_base(var_font)
 
-    out_otf, out_woff2 = (
-        output_dir / f"{family_compact}-{ps_suffix}.otf",
-        output_dir / f"{family_compact}-{ps_suffix}.woff2",
-    )
-    _export_and_chws(
-        var_font, inter_otf, out_otf, out_woff2, is_mono, label=style_label
-    )
+    out_otf = output_dir / f"{family_compact}-{ps_suffix}.otf"
+    _export_and_chws(var_font, inter_otf, out_otf, is_mono, label=style_label)
 
 
 def _get_base_jp_ufos(glyphs_path: Path) -> list[ufoLib2.Font]:
@@ -1910,18 +1922,14 @@ def subset_single_font(
     out_dir: Path,
     unicodes: set[int],
     mac_timestamp: int | None = None,
-) -> tuple[str, int, int, int]:
-    """Subset a single font file into desktop (TTF/OTF) and WOFF2 formats."""
+) -> tuple[str, int, int]:
+    """Subset a single font file (TTF/OTF) into out_dir."""
     out_desktop = out_dir / src_path.name
-    out_woff2 = out_dir / (src_path.stem + ".woff2")
-    subset_and_export(
-        src_path, out_desktop, out_woff2, unicodes=unicodes, mac_ts=mac_timestamp
-    )
+    subset_and_export(src_path, out_desktop, unicodes=unicodes, mac_ts=mac_timestamp)
     return (
         src_path.name,
         src_path.stat().st_size,
         out_desktop.stat().st_size,
-        out_woff2.stat().st_size,
     )
 
 
@@ -1958,19 +1966,99 @@ def build_subset_fonts(
         for future in concurrent.futures.as_completed(futures):
             res = future.result()
             results.append(res)
-            name, orig_sz, desk_sz, woff_sz = res
+            name, orig_sz, desk_sz = res
             pct = (1.0 - desk_sz / orig_sz) * 100
             print(
-                f"  [OK] {name:32s}: {orig_sz / 1024 / 1024:5.2f} MB -> {desk_sz / 1024 / 1024:5.2f} MB ({pct:5.1f}% off) | WOFF2: {woff_sz / 1024 / 1024:5.2f} MB"
+                f"  [OK] {name:32s}: {orig_sz / 1024 / 1024:5.2f} MB -> {desk_sz / 1024 / 1024:5.2f} MB ({pct:5.1f}% off)"
             )
 
     elapsed = time.time() - t0
     tot_orig = sum(r[1] for r in results)
     tot_desk = sum(r[2] for r in results)
     tot_pct = (1.0 - tot_desk / tot_orig) * 100 if tot_orig else 0
+    write_ofl_license(output_dir)
     print(
         f"Subsetting complete in {elapsed:.1f}s ({tot_orig / 1024 / 1024:.1f} MB -> {tot_desk / 1024 / 1024:.1f} MB, {tot_pct:.1f}% reduction)."
     )
+
+
+# --- Release Packaging ---
+
+
+def _build_deterministic_zip(
+    ofl_path: Path,
+    font_files: list[Path],
+    archive_path: Path,
+    root_folder: str,
+    zip_dt: tuple[int, int, int, int, int, int],
+) -> tuple[Path, int, str]:
+    """Pack selected font binaries and standalone OFL.txt into a reproducible ZIP archive."""
+    entries = [ofl_path, *sorted(font_files)]
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_zip = archive_path.with_suffix(archive_path.suffix + ".tmp")
+
+    with zipfile.ZipFile(tmp_zip, "w") as zf:
+        for file_path in entries:
+            info = zipfile.ZipInfo(
+                filename=f"{root_folder}/{file_path.name}",
+                date_time=zip_dt,
+            )
+            info.external_attr = 0o644 << 16
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zf.writestr(
+                info,
+                file_path.read_bytes(),
+                compress_type=zipfile.ZIP_DEFLATED,
+                compresslevel=6,
+            )
+
+    tmp_zip.replace(archive_path)
+    return archive_path, len(entries), _sha256_file(archive_path)
+
+
+def package_release_archives(
+    full_dir: Path = OUTPUT_DIR,
+    subset_dir: Path = SUBSET_DIR,
+    dist_dir: Path = DIST_DIR,
+    version: str | None = None,
+) -> list[Path]:
+    """Create 8 separate release ZIP archives (Sans/Mono x Static/Variable x Full/Subset, each with OFL.txt)."""
+    unix_ts = max(get_build_unix_timestamp(), 315532800)  # ZIP epoch >= 1980-01-01
+    dt = datetime.datetime.fromtimestamp(unix_ts, datetime.UTC)
+    zip_dt = (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+
+    ver_clean = version.strip() if version else ""
+    ver_suffix = f"-{ver_clean}" if ver_clean else ""
+
+    created: list[Path] = []
+    for src_dir, subset_suffix in ((full_dir, ""), (subset_dir, "-Subset")):
+        if not src_dir.is_dir():
+            continue
+        ofl_path = write_ofl_license(src_dir)
+        for fam_prefix in ("HolonSans", "HolonMono"):
+            for kind_label, ext in (("Static", ".ttf"), ("Variable", ".otf")):
+                matched = sorted(
+                    p
+                    for p in src_dir.iterdir()
+                    if p.is_file() and p.name.startswith(fam_prefix) and p.suffix == ext
+                )
+                if not matched:
+                    continue
+                stem = f"{fam_prefix}-{kind_label}{subset_suffix}{ver_suffix}"
+                t0 = time.time()
+                out_zip = dist_dir / f"{stem}.zip"
+                path, count, sha256 = _build_deterministic_zip(
+                    ofl_path, matched, out_zip, stem, zip_dt
+                )
+                sz_mb = path.stat().st_size / 1024 / 1024
+                print(
+                    f"  [OK] {path} ({sz_mb:.2f} MB, {count} files, {time.time() - t0:.1f}s, sha256={sha256})"
+                )
+                created.append(path)
+
+    if not created:
+        raise SystemExit("Error: No built font files found to package.")
+    return created
 
 
 # --- CLI Entry Point ---
@@ -1993,7 +2081,7 @@ def main() -> None:
     parser.add_argument(
         "--clean",
         action="store_true",
-        help="Remove generated font directories (fonts/full, fonts/subset) and tmp/",
+        help="Remove generated directories (fonts/full, fonts/subset, dist) and tmp/",
     )
     parser.add_argument(
         "--family",
@@ -2044,6 +2132,28 @@ def main() -> None:
         help="Directory where subset fonts are saved (default: fonts/subset)",
     )
     parser.add_argument(
+        "--package",
+        action="store_true",
+        help="Package built full and subset fonts (with OFL.txt) into separate ZIP archives in dist/",
+    )
+    parser.add_argument(
+        "--package-only",
+        action="store_true",
+        help="Only package existing fonts/full and fonts/subset into release ZIP archives without rebuilding",
+    )
+    parser.add_argument(
+        "--dist-dir",
+        type=Path,
+        default=DIST_DIR,
+        help="Directory where release ZIP archives are saved (default: dist)",
+    )
+    parser.add_argument(
+        "--version",
+        type=str,
+        default=None,
+        help="Optional version tag appended to release archive names (e.g., 1.000 -> HolonSans-Static-1.000.zip)",
+    )
+    parser.add_argument(
         "--timestamp",
         type=int,
         default=None,
@@ -2052,7 +2162,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.clean:
-        for d in (args.output_dir, args.subset_dir, TMP_DIR):
+        for d in (args.output_dir, args.subset_dir, args.dist_dir, TMP_DIR):
             if d.exists():
                 print(f"Cleaning {d}...")
                 shutil.rmtree(d)
@@ -2068,6 +2178,15 @@ def main() -> None:
         f"=== Holon Font Builder (Deterministic Timestamp: {utc_dt.strftime('%Y-%m-%d %H:%M:%S UTC')}, Unix: {unix_ts}) ==="
     )
 
+    if args.package_only:
+        package_release_archives(
+            full_dir=args.output_dir,
+            subset_dir=args.subset_dir,
+            dist_dir=args.dist_dir,
+            version=args.version,
+        )
+        return
+
     if args.all:
         args.family = "all"
         args.all_styles = True
@@ -2079,6 +2198,13 @@ def main() -> None:
 
     if args.subset_only:
         build_subset_fonts(input_dir=args.output_dir, output_dir=args.subset_dir)
+        if args.package:
+            package_release_archives(
+                full_dir=args.output_dir,
+                subset_dir=args.subset_dir,
+                dist_dir=args.dist_dir,
+                version=args.version,
+            )
         return
 
     weights = WEIGHTS if (args.all_styles or args.weight == "all") else [args.weight]
@@ -2107,8 +2233,18 @@ def main() -> None:
                 fam_name, style=args.var_style, output_dir=args.output_dir
             )
 
+    write_ofl_license(args.output_dir)
+
     if args.subset:
         build_subset_fonts(input_dir=args.output_dir, output_dir=args.subset_dir)
+
+    if args.package:
+        package_release_archives(
+            full_dir=args.output_dir,
+            subset_dir=args.subset_dir,
+            dist_dir=args.dist_dir,
+            version=args.version,
+        )
 
 
 if __name__ == "__main__":

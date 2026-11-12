@@ -1,7 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "brotli>=1.1.0",
 #     "fonttools>=4.50.0",
 #     "freetype-py>=2.4.0",
 #     "pillow>=10.0.0",
@@ -17,6 +16,7 @@ import hashlib
 import itertools
 import sys
 import unicodedata
+import zipfile
 from pathlib import Path
 
 import freetype
@@ -61,18 +61,16 @@ UPSTREAM_JP_PATH = Path(
 SPECIMENS_DIR = Path("specimens")
 
 ALL_EXPECTED = [
-    f"{fam}-{('Italic' if it else 'Regular') if w == 'Regular' else f'{w}{it}'}.{ext}"
+    f"{fam}-{('Italic' if it else 'Regular') if w == 'Regular' else f'{w}{it}'}.ttf"
     for fam in ("HolonSans", "HolonMono")
     for w in WEIGHTS
     for it in ("", "Italic")
-    for ext in ("ttf", "woff2")
 ] + [
-    f"{fam}{it}-Variable.{ext}"
+    f"{fam}{it}-Variable.otf"
     for fam in ("HolonSans", "HolonMono")
     for it in ("", "-Italic")
-    for ext in ("otf", "woff2")
 ]
-DESKTOP_FONTS = [f for f in ALL_EXPECTED if f.endswith((".ttf", ".otf"))]
+DESKTOP_FONTS = ALL_EXPECTED
 VARIABLE_FONTS = [
     "HolonSans-Variable.otf",
     "HolonSans-Italic-Variable.otf",
@@ -220,7 +218,7 @@ def fonts_dir(pytestconfig: pytest.Config) -> Path:
     return p
 
 
-# --- 1. File Completeness, WOFF2 Parity, Compact Metrics & OpenType Metadata ---
+# --- 1. File Completeness, Post 3.0, Compact Metrics & OpenType Metadata ---
 
 
 def test_font_family_completeness(fonts_dir: Path) -> None:
@@ -228,21 +226,20 @@ def test_font_family_completeness(fonts_dir: Path) -> None:
     assert not missing, (
         f"Missing {len(missing)} expected fonts in {fonts_dir}: {missing[:4]}"
     )
+    unexpected_woff = list(fonts_dir.glob("*.woff*"))
+    assert not unexpected_woff, (
+        f"Unexpected WOFF/WOFF2 files in {fonts_dir}: {unexpected_woff}"
+    )
 
 
 @pytest.mark.parametrize("d_name", DESKTOP_FONTS)
-def test_woff2_parity_post3_and_compact_metrics(fonts_dir: Path, d_name: str) -> None:
-    dp, wp = fonts_dir / d_name, fonts_dir / (d_name.rsplit(".", 1)[0] + ".woff2")
+def test_post3_and_compact_metrics(fonts_dir: Path, d_name: str) -> None:
+    dp = fonts_dir / d_name
     if not dp.exists():
         pytest.skip(f"{d_name} not built")
-    assert (
-        wp.exists()
-        and dp.stat().st_size > 100_000
-        and wp.stat().st_size < dp.stat().st_size
-    )
-    fd, fw = get_tt(dp), get_tt(wp)
-    assert fd["post"].formatType == 3.0 and fd["maxp"].numGlyphs == fw["maxp"].numGlyphs
-    assert fd.getBestCmap() == fw.getBestCmap() and set(fd.keys()) == set(fw.keys())
+    assert dp.stat().st_size > 100_000
+    fd = get_tt(dp)
+    assert fd["post"].formatType == 3.0
     assert not any(t in fd for t in ("DSIG", "fpgm", "prep", "cvt "))
     # Verify modal advance glyph clustering compacted hmtx and vmtx
     is_mono = "HolonMono" in d_name
@@ -367,10 +364,7 @@ def test_unique_identifiers_and_family_metrics(fonts_dir: Path) -> None:
         )
 
 
-def test_ofl_license_text() -> None:
-    ofl_p = Path("OFL.txt")
-    assert ofl_p.exists(), "Root OFL.txt must exist"
-    content = ofl_p.read_bytes()
+def _verify_ofl_bytes(content: bytes) -> None:
     prefix = b"Copyright 2026 Daiji Suzuki.\r\n"
     assert content.startswith(prefix)
     upstream_part = content.removeprefix(prefix)
@@ -379,6 +373,73 @@ def test_ofl_license_text() -> None:
         hashlib.sha256(upstream_part).hexdigest()
         == "7e6b2818edbd8f6a01ae80641cc8f16a51080d08fb4e532be3a0b6f74adb07da"
     )
+
+
+def test_ofl_license_text(fonts_dir: Path) -> None:
+    assert not Path("OFL.txt").exists(), (
+        "Root OFL.txt should not exist; include OFL.txt only in generated artifacts"
+    )
+    ofl_p = fonts_dir / "OFL.txt"
+    assert ofl_p.exists(), f"{ofl_p} must exist in generated font directory"
+    content = ofl_p.read_bytes()
+    _verify_ofl_bytes(content)
+
+    subset_dir = Path("fonts/subset")
+    if subset_dir.is_dir() and any(subset_dir.glob("*.ttf")):
+        subset_ofl = subset_dir / "OFL.txt"
+        assert subset_ofl.exists(), f"{subset_ofl} must exist in subset font directory"
+        assert subset_ofl.read_bytes() == content
+
+
+def test_release_archives(fonts_dir: Path) -> None:
+    dist_dir = Path("dist")
+    if not dist_dir.is_dir():
+        pytest.skip("dist/ not built (run build.py --package or --package-only)")
+    zips = sorted(dist_dir.glob("Holon*.zip"))
+    if not zips:
+        pytest.skip("No release ZIP archives in dist/")
+
+    expected_ofl = (fonts_dir / "OFL.txt").read_bytes()
+    _verify_ofl_bytes(expected_ofl)
+
+    expected_groups = {
+        f"{fam}-{kind}{sub}": [
+            f for f in ALL_EXPECTED if f.startswith(fam) and f.endswith(ext)
+        ]
+        for fam in ("HolonSans", "HolonMono")
+        for kind, ext in (("Static", ".ttf"), ("Variable", ".otf"))
+        for sub in ("", "-Subset")
+    }
+
+    matched_keys: set[str] = set()
+    for zp in zips:
+        stem = zp.stem
+        group_key = next(
+            (
+                k
+                for k in sorted(expected_groups, key=len, reverse=True)
+                if stem == k or stem.startswith(f"{k}-")
+            ),
+            None,
+        )
+        assert group_key is not None, f"Unexpected release ZIP name: {zp.name}"
+        matched_keys.add(group_key)
+
+        with zipfile.ZipFile(zp, "r") as zf:
+            names = set(zf.namelist())
+            expected_entries = {f"{stem}/OFL.txt"} | {
+                f"{stem}/{fname}" for fname in expected_groups[group_key]
+            }
+            assert names == expected_entries, (
+                f"Unexpected archive entries in {zp}: "
+                f"missing={expected_entries - names}, extra={names - expected_entries}"
+            )
+            assert zf.read(f"{stem}/OFL.txt") == expected_ofl
+
+    if Path("fonts/subset").is_dir() and any(Path("fonts/subset").glob("*.ttf")):
+        assert matched_keys == set(expected_groups), (
+            f"Missing expected release ZIP groups: {set(expected_groups) - matched_keys}"
+        )
 
 
 # --- 2. Glyph Bounds, Clipping, Repertoire & Authentic Italic ---

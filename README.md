@@ -19,17 +19,22 @@
 
 ## ファイル構成
 
-- **`fonts/full/`**: 全文字収録版（Static TTF / WOFF2 各16種、Variable OTF / WOFF2 各2種）
-- **`fonts/subset/`**: 常用漢字 2,136 字 + 基本記号・欧文に厳選した軽量サブセット版
+- **`fonts/full/`**: 全文字収録版（Static TTF 32種、Variable OTF 4種、`OFL.txt`）
+- **`fonts/subset/`**: 常用漢字 2,136 字 + 基本記号・欧文に厳選した軽量サブセット版（同構成 + `OFL.txt`）
+- **`dist/`**: リリース配布用 ZIP アーカイブ全 8 種（それぞれ `OFL.txt` 同梱）
+  - `HolonSans-Static.zip` / `HolonSans-Variable.zip`
+  - `HolonSans-Static-Subset.zip` / `HolonSans-Variable-Subset.zip`
+  - `HolonMono-Static.zip` / `HolonMono-Variable.zip`
+  - `HolonMono-Static-Subset.zip` / `HolonMono-Variable-Subset.zip`
 
 ## 使い方
 
-### Web フォント (CSS)
+### CSS (`@font-face`)
 
 ```css
 @font-face {
   font-family: "Holon Sans";
-  src: url("fonts/full/HolonSans-Variable.woff2") format("woff2");
+  src: url("fonts/full/HolonSans-Variable.otf") format("opentype");
   font-weight: 100 700;
   font-style: normal;
   font-display: swap;
@@ -55,8 +60,14 @@ body {
 [uv](https://docs.astral.sh/uv/) を使用してビルドおよびテストを実行します。
 
 ```bash
-# 全フォント＋サブセット版の一括ビルド (全72フォント / 144ファイル)
+# 全フォント＋サブセット版の一括ビルド (全72ファイル)
 uv run build.py --all
+
+# 全ビルド＋リリース用 ZIP アーカイブ 8 種の生成 (dist/)
+uv run build.py --all --package
+
+# ビルド済みフォントからリリース用 ZIP アーカイブのみ生成 (--version 1.000 指定可)
+uv run build.py --package-only
 
 # フル版のみ全ビルド (fonts/full)
 uv run build.py --full-only
@@ -64,7 +75,7 @@ uv run build.py --full-only
 # 常用漢字サブセット版のみの生成 (fonts/subset)
 uv run build.py --subset-only
 
-# 生成済みフォント・一時ファイルのクリーンアップ
+# 生成済みフォント・パッケージ・一時ファイルのクリーンアップ
 uv run build.py --clean
 
 # 自動テストの実行
@@ -73,5 +84,5 @@ uv run test.py
 
 ## ライセンス
 
-- **フォント**: [SIL Open Font License 1.1](OFL.txt)
+- **フォント成果物**: [SIL Open Font License 1.1](https://openfontlicense.org/)
 - **ビルド・テストスクリプト**: [MIT License](LICENSE)
