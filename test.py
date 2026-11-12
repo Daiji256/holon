@@ -1,11 +1,11 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "fonttools>=4.50.0",
-#     "freetype-py>=2.4.0",
-#     "pillow>=10.0.0",
-#     "pytest>=8.0.0",
-#     "uharfbuzz>=0.39.0",
+#     "fonttools>=4.68.0",
+#     "freetype-py>=2.5.1",
+#     "pillow>=13.0.0",
+#     "pytest>=9.2.0",
+#     "uharfbuzz>=0.57.0",
 # ]
 # ///
 

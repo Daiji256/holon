@@ -1,12 +1,12 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#     "cffsubr>=0.3.0",
-#     "chws-tool>=1.4.0",
-#     "fonttools>=4.50.0",
-#     "glyphsLib>=6.9.0",
+#     "cffsubr>=0.4.0",
+#     "chws-tool>=1.4.5",
+#     "fonttools>=4.68.0",
+#     "glyphsLib>=6.17.2",
 #     "ufo2ft>=3.11.0",
-#     "ufoLib2>=0.16.0",
+#     "ufoLib2>=0.19.1",
 # ]
 # ///
 
