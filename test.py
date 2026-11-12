@@ -949,6 +949,19 @@ def create_specimen_canvas(
     return img, draw
 
 
+def save_specimen(img: Image.Image, out_path: Path) -> Path:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        with Image.open(out_path) as existing:
+            if (
+                existing.size == img.size
+                and existing.convert(img.mode).tobytes() == img.tobytes()
+            ):
+                return out_path
+    img.save(out_path)
+    return out_path
+
+
 def render_sans_weights(fonts_dir: Path, out_path: Path) -> Path:
     sr = fonts_dir / "HolonSans-Regular.ttf"
     sb = fonts_dir / "HolonSans-Bold.ttf"
@@ -993,9 +1006,7 @@ def render_sans_weights(fonts_dir: Path, out_path: Path) -> Path:
         if wn != WEIGHTS[-1]:
             draw.line([(48, y - 10), (1252, y - 10)], fill=(243, 244, 246), width=1)
             y += 18
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_sans_chws(fonts_dir: Path, out_path: Path) -> Path:
@@ -1053,9 +1064,7 @@ def render_sans_chws(fonts_dir: Path, out_path: Path) -> Path:
         if title != samples[-1][0]:
             draw.line([(48, y - 12), (1252, y - 12)], fill=(243, 244, 246), width=1)
             y += 10
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_sans_vertical(fonts_dir: Path, out_path: Path) -> Path:
@@ -1141,9 +1150,7 @@ def render_sans_vertical(fonts_dir: Path, out_path: Path) -> Path:
         draw_text_hb(img, sr, line, 18, (lx, 160), vert=True, col=(17, 24, 39))
         lx -= 75
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_sans_variable(fonts_dir: Path, out_path: Path) -> Path:
@@ -1317,9 +1324,7 @@ def render_sans_variable(fonts_dir: Path, out_path: Path) -> Path:
         col=(243, 244, 246),
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_sans_features(fonts_dir: Path, out_path: Path) -> Path:
@@ -1421,9 +1426,7 @@ def render_sans_features(fonts_dir: Path, out_path: Path) -> Path:
         draw_text_hb(img, sr, samp, 16, (180, ry + 4), col=(17, 24, 39))
         ry += 42
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_mono_weights(fonts_dir: Path, out_path: Path) -> Path:
@@ -1472,9 +1475,7 @@ def render_mono_weights(fonts_dir: Path, out_path: Path) -> Path:
         if wn != WEIGHTS[-1]:
             draw.line([(48, y - 10), (1252, y - 10)], fill=(243, 244, 246), width=1)
             y += 18
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_mono_duospace(fonts_dir: Path, out_path: Path) -> Path:
@@ -1579,9 +1580,7 @@ def render_mono_duospace(fonts_dir: Path, out_path: Path) -> Path:
         draw_text_hb(img, mr, line, 15, (48, cy), col=(17, 24, 39))
         cy += 24
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_mono_box_drawing(fonts_dir: Path, out_path: Path) -> Path:
@@ -1706,9 +1705,7 @@ def render_mono_box_drawing(fonts_dir: Path, out_path: Path) -> Path:
         col=(55, 65, 81),
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_mono_variable(fonts_dir: Path, out_path: Path) -> Path:
@@ -1905,9 +1902,7 @@ def render_mono_variable(fonts_dir: Path, out_path: Path) -> Path:
         col=(243, 244, 246),
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def render_mono_code(fonts_dir: Path, out_path: Path) -> Path:
@@ -1994,9 +1989,7 @@ def render_mono_code(fonts_dir: Path, out_path: Path) -> Path:
         draw_text_hb(img, mr, line, 15, (48, cy), col=col)
         cy += 25
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
-    return out_path
+    return save_specimen(img, out_path)
 
 
 def generate_all_specimens(fonts_dir: Path) -> list[Path]:
@@ -2019,9 +2012,7 @@ def generate_all_specimens(fonts_dir: Path) -> list[Path]:
     return out
 
 
-def test_specimen_generation(fonts_dir: Path, pytestconfig: pytest.Config) -> None:
-    if not pytestconfig.getoption("--specimens", default=False):
-        pytest.skip("Specimen generation skipped (run with --specimens)")
+def test_specimen_generation(fonts_dir: Path) -> None:
     paths = generate_all_specimens(fonts_dir)
     assert len(paths) == 10 and all(
         p.exists() and p.stat().st_size > 10_000 for p in paths

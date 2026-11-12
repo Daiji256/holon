@@ -11,13 +11,13 @@ fonts/
 dist/
 OFL.txt
 
-# Visual specimens and preview images (do not commit during development)
-specimens/
+# Preview images
 *.png
 *.jpg
 *.jpeg
 *.svg
 *.webp
+!specimens/*.png
 
 # HTML test previews
 *.html
