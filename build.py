@@ -444,10 +444,15 @@ def ensure_zip_source(key: str) -> Path:
     for ufo_zip in extract_dir.rglob("*.ufo.zip"):
         if (
             not ufo_zip.name.startswith("._")
-            and not (ufo_dest := ufo_zip.parent / ufo_zip.stem).exists()
+            and not (ufo_zip.parent / ufo_zip.stem).exists()
         ):
             with zipfile.ZipFile(ufo_zip, "r") as uzf:
-                uzf.extractall(ufo_dest)
+                uzf.extractall(
+                    ufo_zip.parent,
+                    members=[
+                        m for m in uzf.namelist() if not m.startswith("__MACOSX/")
+                    ],
+                )
     sentinel.touch()
     return target
 
