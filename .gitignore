@@ -1,34 +1,5 @@
-# Temporary directory
 tmp/
-
-# Generated fonts and release artifacts
-*.ttf
-*.otf
-*.woff
-*.woff2
-*.zip
 fonts/
 dist/
-OFL.txt
-
-# Preview images
-*.png
-*.jpg
-*.jpeg
-*.svg
-*.webp
-!specimens/*.png
-
-# HTML test previews
-*.html
-!demo.html
-
-# Python artifacts
 __pycache__/
-*.py[cod]
-.venv/
-.ruff_cache/
-.pytest_cache/
-
-# OS artifacts
 .DS_Store
